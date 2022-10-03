@@ -20,6 +20,7 @@
 #include "engine/isprite_factory.hpp"
 #include "renderer/texture_atlas.hpp"
 
+#include <map>
 #include <unordered_map>
 #include <vector>
 
@@ -60,6 +61,8 @@ public:
   base::Rect<int> actorFrameRect(data::ActorID id, int frame) const override;
   SpriteFrame actorFrameData(data::ActorID id, int frame) const override;
 
+  int actorFrameImageId(data::ActorID id, int frame) const override;
+
   bool hasHighResReplacements() const { return mHasHighResReplacements; }
 
   const renderer::TextureAtlas& textureAtlas() const
@@ -76,6 +79,7 @@ private:
 
   using CtorArgs = std::tuple<
     std::unordered_map<data::ActorID, SpriteData>,
+    std::map<std::tuple<data::ActorID, int>, int>,
     renderer::TextureAtlas,
     bool>;
 
@@ -85,6 +89,7 @@ private:
     const assets::ResourceLoader* pResourceLoader);
 
   std::unordered_map<data::ActorID, SpriteData> mSpriteDataMap;
+  std::map<std::tuple<data::ActorID, int>, int> mRawSpriteImageIdMap;
   renderer::TextureAtlas mSpritesTextureAtlas;
   bool mHasHighResReplacements;
 };

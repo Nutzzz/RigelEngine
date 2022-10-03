@@ -67,6 +67,11 @@ struct MockSpriteFactory : public rigel::engine::ISpriteFactory
   {
     return {};
   }
+
+  int actorFrameImageId(data::ActorID id, int frame) const override
+  {
+    return 0;
+  }
 };
 
 

@@ -32,6 +32,7 @@ struct ISpriteFactory
   virtual base::Rect<int> actorFrameRect(data::ActorID id, int frame) const = 0;
   virtual engine::SpriteFrame
     actorFrameData(data::ActorID id, int frame) const = 0;
+  virtual int actorFrameImageId(data::ActorID id, int frame) const = 0;
 };
 
 } // namespace rigel::engine

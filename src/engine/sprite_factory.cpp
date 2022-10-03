@@ -845,8 +845,9 @@ SpriteFactory::SpriteFactory(
 
 SpriteFactory::SpriteFactory(CtorArgs args)
   : mSpriteDataMap(std::move(std::get<0>(args)))
-  , mSpritesTextureAtlas(std::move(std::get<1>(args)))
-  , mHasHighResReplacements(std::get<2>(args))
+  , mRawSpriteImageIdMap(std::move(std::get<1>(args)))
+  , mSpritesTextureAtlas(std::move(std::get<2>(args)))
+  , mHasHighResReplacements(std::get<3>(args))
 {
 }
 
@@ -858,6 +859,7 @@ auto SpriteFactory::construct(
   bool highResReplacementsFound = false;
 
   std::unordered_map<data::ActorID, SpriteData> spriteDataMap;
+  std::map<std::tuple<data::ActorID, int>, int> rawSpriteImageIdMap;
 
   std::vector<data::Image> spriteImages;
   spriteImages.reserve(INGAME_SPRITE_ACTOR_IDS.size());
@@ -878,10 +880,14 @@ auto SpriteFactory::construct(
         return pResourceLoader->loadActor(partId);
       });
 
+    int partNum = 0;
+
     // Similarly, non-const for move semantics
     for (auto& actorData : actorParts)
     {
       lastDrawOrder = actorData.mDrawIndex;
+
+      int frameNum = 0;
 
       // Similarly, non-const for move semantics
       for (auto& frameData : actorData.mFrames)
@@ -901,8 +907,15 @@ auto SpriteFactory::construct(
           highResReplacementsFound = true;
         }
 
+        rawSpriteImageIdMap.insert(
+          {std::make_pair(actorPartIds[partNum], frameNum),
+           int(spriteImages.size())});
+        frameNum++;
+
         spriteImages.emplace_back(std::move(image));
       }
+
+      partNum++;
 
       framesToRender.push_back(lastFrameCount);
       lastFrameCount = int(actorData.mFrames.size());
@@ -920,6 +933,7 @@ auto SpriteFactory::construct(
 
   return {
     std::move(spriteDataMap),
+    std::move(rawSpriteImageIdMap),
     renderer::TextureAtlas{pRenderer, spriteImages},
     highResReplacementsFound};
 }
@@ -949,6 +963,12 @@ engine::SpriteFrame
   const auto realFrame =
     virtualToRealFrame(frame, data.mDrawData, std::nullopt);
   return data.mDrawData.mFrames[realFrame];
+}
+
+
+int SpriteFactory::actorFrameImageId(data::ActorID id, int frame) const
+{
+  return mRawSpriteImageIdMap.at(std::make_pair(id, frame));
 }
 
 } // namespace rigel::engine
