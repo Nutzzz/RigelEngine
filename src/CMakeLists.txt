@@ -126,6 +126,7 @@ set(core_sources
     frontend/game_service_provider.hpp
     frontend/game_session_mode.cpp
     frontend/game_session_mode.hpp
+    frontend/igame_world.hpp
     frontend/input_handler.cpp
     frontend/input_handler.hpp
     frontend/intro_demo_loop_mode.cpp
