@@ -276,6 +276,23 @@ set(core_sources
     game_logic/player/ship.hpp
     game_logic/world_state.cpp
     game_logic/world_state.hpp
+    game_logic_classic/actors.c
+    game_logic_classic/actors.h
+    game_logic_classic/common.h
+    game_logic_classic/defs.h
+    game_logic_classic/game1.c
+    game_logic_classic/game2.c
+    game_logic_classic/game3.c
+    game_logic_classic/game_world_classic.cpp
+    game_logic_classic/game_world_classic.hpp
+    game_logic_classic/gamedefs.h
+    game_logic_classic/lvlhead.h
+    game_logic_classic/memory.c
+    game_logic_classic/particls.c
+    game_logic_classic/player.c
+    game_logic_classic/sprite.c
+    game_logic_classic/types.h
+    game_logic_classic/vars.h
     renderer/custom_quad_batch.cpp
     renderer/custom_quad_batch.hpp
     renderer/fps_limiter.cpp

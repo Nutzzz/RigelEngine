@@ -23,6 +23,16 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "base/warnings.hpp"
+
+#include "actors.h"
+#include "common.h"
+#include "gamedefs.h"
+#include "sounds.h"
+#include "vars.h"
+
+
+RIGEL_DISABLE_WARNINGS
 
 /*******************************************************************************
 
@@ -36,28 +46,38 @@ map and background drawing code, and a few random building block functions.
 
 *******************************************************************************/
 
+static sbyte EFFECT_MOVEMENT_TABLES[7][21] = {
+  // EM_FLY_LEFT
+  {3, 0, 3, 0, 3, 0, 2, 0, 2, 1, 2, 1, 2, 2, 1, 2, 1, 3, 1, 3, -127},
 
-/** Teleport to the given position
- *
- * This function sets up some state, the actual position change and the fade
- * transition are handled by RunInGameLoop().
- */
-void pascal TeleportTo(word x, word y)
-{
-  gmIsTeleporting = true;
-  gmTeleportTargetPosX = x;
-  gmTeleportTargetPosY = y;
-}
+  // EM_FLY_UPPER_LEFT
+  {3, -3, 2, -2, 2, -1, 1, 0, 1, 0, 1, 1, 1, 2, 1, 2, 1, 3, 1, 3, -127},
+
+  // EM_FLY_UP
+  {0, -3, 0, -2, 0, -2, 0, -1, 0, 0, 0, 1, 0, 1, 0, 2, 0, 3, 0, 3, -127},
+
+  // EM_FLY_UPPER_RIGHT
+  {-3, -3, -2, -2, -2, -1, -1, 0,  -1, 0,   -1,
+   1,  -1, 2,  -1, 3,  -1, 4,  -1, 4,  -127},
+
+  // EM_FLY_RIGHT
+  {-3, 0, -3, 0, -3, 0, -2, 0, -2, 1, -2, 1, -2, 2, -1, 3, -1, 3, -1, 3, -127},
+
+  // EM_FLY_DOWN
+  {0, 1, 0, 2, 0, 2, 0, 2, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, -127},
+
+  // EM_BLOW_IN_WIND
+  {-2, 1, -2, 1, -2, 1, -1, 1, 0, 1, 1, 1, 2, 0, 1, -1, -2, -1, -2, 1, -127}};
 
 
 /** Update backdrop state for parallax scrolling etc.
-  *
-  * Depending on the current level's backdrop settings, this function does
-  * different things that cause the backdrop drawing code in UpdateAndDrawGame
-  * to have the desired results.
-  * It also handles the earthquake and reactor destruction event effects.
-  */
-void UpdateBackdrop(void)
+ *
+ * Depending on the current level's backdrop settings, this function does
+ * different things that cause the backdrop drawing code in UpdateAndDrawGame
+ * to have the desired results.
+ * It also handles the earthquake and reactor destruction event effects.
+ */
+void UpdateBackdrop(Context* ctx)
 {
   /*
   How the parallax scrolling works
@@ -99,20 +119,17 @@ void UpdateBackdrop(void)
 
   byte random;
 
-  bdOffsetTablePtr = bdOffsetTable;
-
   //
   // Earthquake effect
   //
-  if (mapHasEarthquake)
+  if (ctx->mapHasEarthquake)
   {
     if (
-      gmEarthquakeCountdown < gmEarthquakeThreshold &&
-      gmEarthquakeCountdown != 0)
+      ctx->gmEarthquakeCountdown < ctx->gmEarthquakeThreshold &&
+      ctx->gmEarthquakeCountdown != 0)
     {
-      random = RandomNumber() & 0x3;
-      ShowTutorial(
-        TUT_EARTHQUAKE, " E A R T H Q U A K E ! ! !*WAIT, THIS IS NOT EARTH.");
+      random = RandomNumber(ctx) & 0x3;
+      ShowTutorial(ctx, TUT_EARTHQUAKE);
 
       if (random)
       {
@@ -120,153 +137,43 @@ void UpdateBackdrop(void)
       }
       else
       {
-        PlaySound(SND_EARTHQUAKE + (random > 2 ? 1 : 0));
+        PlaySound(ctx, SND_EARTHQUAKE + (random > 2 ? 1 : 0));
       }
     }
 
-    if (!gmEarthquakeCountdown)
+    if (!ctx->gmEarthquakeCountdown)
     {
-      gmEarthquakeCountdown = RandomNumber();
-      gmEarthquakeThreshold = RandomNumber() % 50;
+      ctx->gmEarthquakeCountdown = RandomNumber(ctx);
+      ctx->gmEarthquakeThreshold = RandomNumber(ctx) % 50;
     }
 
-    gmEarthquakeCountdown--;
+    ctx->gmEarthquakeCountdown--;
   }
 
-  //
-  // Horizontal auto-scrolling
-  //
-  if (mapBackdropAutoScrollX)
-  {
-    bdAutoScrollStep++;
-    if (bdAutoScrollStep == 4 * 40)
-    {
-      bdAutoScrollStep = 0;
-    }
-
-    // Alternate between the 4 pre-shifted versions of the backdrop image
-    // to create an impression of the backdrop moving by 2 pixels each frame.
-    bdAddress += 0x2000;
-    if (bdAddress == 0xC000)
-    {
-      bdAddress = 0x4000;
-    }
-
-    // Every 4 frames, advance the tile start offset for the backdrop to get
-    // scrolling past 8 pixels.
-    bdOffsetTablePtr += bdAutoScrollStep / 4;
-  }
-
-  //
-  // Vertical auto-scrolling + horizontal parallax
-  //
-  if (mapBackdropAutoScrollY)
-  {
-    if (bdAutoScrollStep == 0)
-    {
-      bdAutoScrollStep = 2 * 25;
-    }
-
-    bdAutoScrollStep--;
-
-    // Alternate between shifted and unshifted backdrop to emulate scrolling in
-    // 4-pixel increments for the horizontal parallax.
-    if (gmCameraPosX % 2)
-    {
-      bdAddress = 0x6000;
-    }
-    else
-    {
-      bdAddress = 0x4000;
-    }
-
-    // Same thing for the vertical axis, but here we alternate based on the
-    // auto-scroll stepper instead of the camera position.
-    if (bdAutoScrollStep % 2)
-    {
-      bdAddress += 0x4000;
-    }
-
-    // Set tile start offset to achieve scrolling past the first 4 pixels.
-    // For ever other vertical scroll step (`bdAutoScrollStep / 2`), we skip
-    // one row of tiles in the backdrop offset table (`* 80`). For every other
-    // horizontal camera position change, we move forward by one tile in the
-    // table. The table has enough entries to scroll up to 39 tiles, so after
-    // that, we need to wrap around - hence the `% 40`.
-    bdOffsetTablePtr += bdAutoScrollStep / 2 * 80 + gmCameraPosX / 2 % 40;
-  }
-
-  //
-  // Horizontal and vertical parallax
-  //
-  if (mapParallaxBoth)
-  {
-    // Alternate between shifted and unshifted backdrop to emulate scrolling in
-    // 4-pixel increments for the horizontal parallax.
-    // See LoadBackdrop().
-    if (gmCameraPosX % 2)
-    {
-      bdAddress = 0x6000;
-    }
-    else
-    {
-      bdAddress = 0x4000;
-    }
-
-    // Alternate between the vertically shifted and unshifted versions of the
-    // backdrop chosen above, to emulate vertical scrolling in 4-pixel
-    // increments.
-    if (gmCameraPosY % 2)
-    {
-      bdAddress += 0x4000;
-    }
-
-    // See above
-    bdOffsetTablePtr += gmCameraPosY / 2 % 25 * 80 + gmCameraPosX / 2 % 40;
-  }
-
-  //
-  // Horizontal parallax
-  //
-  if (mapParallaxHorizontal)
+  if (ctx->mapParallaxHorizontal)
   {
     // Reactor destruction event (backdrop flashes white every other frame)
     // update. The actual flashing happens in UpdateAndDrawGame() based on
-    // the state of gmReactorDestructionStep, here we just update the step
+    // the state of ctx->gmReactorDestructionStep, here we just update the step
     // variable, play sound effects, and show a message.
-    if (bdAddressAdjust && mapHasReactorDestructionEvent)
+    if (ctx->bdUseSecondary && ctx->mapHasReactorDestructionEvent)
     {
-      if (gmReactorDestructionStep < 14)
+      if (ctx->gmReactorDestructionStep < 14)
       {
-        gmReactorDestructionStep++;
+        ctx->gmReactorDestructionStep++;
 
-        if (gfxCurrentDisplayPage)
+        if (ctx->gfxCurrentDisplayPage)
         {
-          PlaySound(SND_BIG_EXPLOSION);
+          PlaySound(ctx, SND_BIG_EXPLOSION);
         }
       }
 
-      if (gmReactorDestructionStep == 13)
+      if (ctx->gmReactorDestructionStep == 13)
       {
         ShowInGameMessage(
-          "DUKE... YOU HAVE DESTROYED*EVERYTHING.  EXCELLENT...");
+          ctx, "DUKE... YOU HAVE DESTROYED*EVERYTHING.  EXCELLENT...");
       }
     }
-
-    // Horizontal parallax. bdAddressAdjust is used to switch between the
-    // primary and secondary backdrop image, for the reactor destruction event
-    // (in E1L5) and when switching the backdrop after teleporting (in E1L1).
-    if (gmCameraPosX % 2)
-    {
-      bdAddress = 0x6000 + bdAddressAdjust;
-    }
-    else
-    {
-      bdAddress = 0x4000 + bdAddressAdjust;
-    }
-
-    // See above
-    bdOffsetTablePtr += gmCameraPosX / 2 % 40;
   }
 }
 
@@ -279,310 +186,20 @@ void UpdateBackdrop(void)
  * state of the world. This includes parallax background, map tiles, sprites,
  * particle effects etc.
  */
-void pascal UpdateAndDrawGame(void (*updatePlayerFunc)())
+void pascal UpdateAndDrawGame(Context* ctx)
 {
-  register word col;
-  register word frontMaskedsIndex = 0;
-  word srcRowOffset;
-  word background;
-  word foreground;
-  word extraDataIndex;
-  word extraDataShift;
-  word frontMaskeds[500];
+  ctx->gfxFlashScreen = false;
 
-// Draw a part of the backdrop. bdAddress and bdOffsetTablePtr are updated in
-// UpdateBackdrop() in order to make the backdrop scroll.
-// If the reactor destruction event (found in E1L5) is currently happening, we
-// draw a solid white color instead of the backdrop every other frame, to make
-// the backdrop image flash white. Interestingly, drawing the white color is
-// not implemented via the status icon tileset, which does also contain
-// single-color tiles for use with FillScreenRegion. Instead, we use the bottom
-// right solid tile (i.e., highest possible solid tile index) found in the
-// level-specific tileset. The tileset used in E1L5 happens to have a fully
-// white tile at that location, but it could easily be something else. I'm not
-// sure why it was implemented this way, perhaps as a way to give the artists
-// some control over the appearance of the backdrop flash?
-#define DRAW_BACKDROP_TILE()                                    \
-  if (                                                          \
-    gmReactorDestructionStep &&                                 \
-    gmReactorDestructionStep < 14 &&                            \
-    gfxCurrentDisplayPage)                                      \
-  {                                                             \
-    BlitSolidTile(XY_TO_OFFSET(39, 24), col + destOffset);      \
-  }                                                             \
-  else                                                          \
-  {                                                             \
-    BlitSolidTile(                                              \
-      bdAddress + *(bdOffsetTablePtr + col), col + destOffset); \
-  }
+  UpdatePlayer(ctx);
+  UpdateBackdrop(ctx);
+  UpdateMovingMapParts(ctx);
+  UpdateAndDrawActors(ctx);
+  UpdateAndDrawParticles(ctx);
+  UpdateAndDrawPlayerShots(ctx);
+  UpdateAndDrawEffects(ctx);
+  UpdateAndDrawTileDebris(ctx);
 
-
-// Draw a masked tile. If the tile is a background tile, we can immediately draw
-// it, but if it's a foreground tile, we instead add it to a list to be drawn
-// later. This is so that foreground masked tiles appear in front of the
-// sprites. This mechanism is not needed for solid tiles, because the sprite
-// drawing code skips drawing parts of the sprite which are obscured by a
-// solid foreground tile. This allows us to draw all solid tiles in one go
-// without needing to distinguish between foreground and background tiles, and
-// still have sprites appear to be behind foreground tiles.
-#define DRAW_MASKED_TILE(value)                               \
-  if (gfxTilesetAttributes[value >> 3] & TA_FOREGROUND)       \
-  {                                                           \
-    frontMaskeds[frontMaskedsIndex] = value;                  \
-    frontMaskeds[frontMaskedsIndex + 1] = col + destOffset;   \
-    frontMaskedsIndex += 2;                                   \
-  }                                                           \
-  else                                                        \
-  {                                                           \
-    BlitMaskedMapTile(                                        \
-      gfxMaskedTileData + value, col + destOffset);           \
-  }
-
-
-  if (gfxFlashScreen)
-  {
-    // If a screen flash effect was requested, simply fill the screen using the
-    // requested color and then swap buffers. Because updatePlayerFunc is not
-    // invoked in this case, there is no frame delay and the in-game loop will
-    // call UpdateAndDrawGame() again right after, making the screen flash
-    // technically part of the following frame.
-    //
-    // [NOTE] The same could've been achieved in a clearer manner by doing the
-    // buffer swapping here inside the if statement, and then continuing on with
-    // the rest of the function instead of putting the remainder of the code
-    // into the else branch.
-    FillScreenRegion(gfxScreenFlashColor, 1, 1, VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
-    gfxFlashScreen = false;
-  }
-  else
-  {
-    // Start drawing the map at screen pixel coordinates (8, 8). In EGA memory,
-    // 1 byte represents 8 pixels. 40 is the width of the entire screen (320 /
-    // 8).
-    destOffset = 8*40 + 1;
-
-    //
-    // Tile animation state update
-    //
-    if (gfxCurrentDisplayPage)
-    {
-      gfxTileAnimationStepSlow += 8;
-      if (gfxTileAnimationStepSlow == 32)
-      {
-        gfxTileAnimationStepSlow = 0;
-      }
-    }
-
-    gfxTileAnimationStepFast += 8;
-    if (gfxTileAnimationStepFast == 32)
-    {
-      gfxTileAnimationStepFast = 0;
-    }
-
-    // Read input, update player, and - crucially - wait some ticks in order
-    // to make the game run at the configured game speed.
-    // See WaitAndUpdatePlayer() in player.c.
-    updatePlayerFunc();
-
-    UpdateBackdrop();
-
-    // Configure EGA hardware to allow the use of BlitSolidTile, which relies on
-    // the latch copy technique for speed. See gfx.asm.
-    // For drawing masked tiles, we need to temporarily change the hardware
-    // state, but this is done within BlitMaskedMapTile.
-    EGA_SETUP_LATCH_COPY();
-
-    // Pre-compute some variables to save on computation during the tile drawing
-    // loop
-    srcOffsetEnd = (gmCameraPosY + mapViewportHeight) << mapWidthShift;
-    srcRowOffset = gmCameraPosY << mapWidthShift;
-
-    UpdateMovingMapParts();
-
-    //
-    // Backdrop and map drawing
-    //
-
-    /*
-    The way drawing the map and backdrop works is interesting. The plain old VGA
-    interface has a very limited bandwidth thanks to the slow ISA bus.  All the
-    data has to be copied by the CPU, there's no DMA or other hardware accele-
-    ration. Later graphics cards did offer various acceleration capabilities,
-    but there was no common API to make use of these features under DOS, so a
-    game developer wanting to take advantage of this would have to develop
-    custom code for each graphics card vendor, and then include a setup where
-    the user would need to choose the type of card they have etc.  Basically all
-    the tedious stuff that's handled at the operating system level nowadays had
-    to be part of the game. And even if a developer went through all that
-    effort, the game would still be slow for users who didn't have one of the
-    supported video cards. It made much more sense to code against the lowest
-    common denominator, i.e. plain VGA, and try to get the best performance out
-    of it that you can. This way, your game would run on a wide range of
-    machines at acceptable speed, while keeping development effort manageable.
-
-    To achieve decent performance on older VGA cards, it's vitally important to
-    reduce the amount of data written to video memory each frame.  The game uses
-    two techniques to achieve that. First, it draws everything in a grid of 8x8
-    pixel tiles, including sprites. When drawing the map, each tile is filled
-    with either a part of the backdrop, or a solid tile.
-
-    Crucially, even tiles which appear in front of sprites are already drawn at
-    this point. When drawing the sprites later on, the parts of the sprite that
-    would be covered by a foreground tile are skipped completely. This way,
-    overdraw is reduced and thus also the amount of bandwidth needed.
-    See DrawActor() in sprite.c. This technique doesn't work for partially
-    transparent map tiles (aka masked tiles) though, so these are added to a
-    list instead and then drawn after drawing sprites.
-
-    The other technique used by the game to achieve a speedup is to copy solid
-    tiles from video memory to video memory using latch copies. See gfx.asm.
-
-    All of this already exists in Cosmo and (to some extent) Duke Nukem I.
-    What's new in Duke 2 is the addition of "composite" tiles which consist of a
-    solid tile background and a masked tile foreground.
-    */
-
-    do
-    {
-      col = 0;
-
-      do
-      {
-        pCurrentTile = mapData + srcRowOffset + col + gmCameraPosX;
-
-        if (*pCurrentTile == 0) // no tile, draw backdrop
-        {
-          DRAW_BACKDROP_TILE();
-        }
-        else if (*pCurrentTile >= 8000) // masked or composite tile
-        {
-          if (*pCurrentTile & 0x8000) // composite tile
-          {
-            // Extract foreground and background from the composite. A
-            // composite tile value consists of 10 bits for the background tile
-            // index, and 5 bits for the foreground tile index. The most
-            // significant bit serves as the marker to indicate a composite
-            // tile. 10 bits are enough to encode values up to 1023, which is
-            // sufficient to encode all possible solid tile indices since the
-            // highest possible index is 999. But 5 bits can only encode values
-            // up to 31. There are 160 masked tiles in a tileset, so that's
-            // clearly not enough. Level files therefore feature an additional
-            // "extra data" section after the regular map data, which contains 2
-            // additional bits for each tile in the map data.
-
-            // Solid tile indices are expected to be multiplied by 8 (<< 3), in
-            // order to be directly usable as a memory offset in BlitSolidTile.
-            background = (*pCurrentTile & 0x3FF) << 3;
-
-            // BlitMaskedMapTile subtracts 8000 from the value that's passed in,
-            // so we need to add 8000 to the value here. The foreground index
-            // also needs to be multiplied by 40, since regular masked tile
-            // values in the map data are encoded this way. This again makes it
-            // easier to directly use the tile value as a memory offset within
-            // BlitMaskedMapTile.
-            foreground = 8000 + ((*pCurrentTile >> 10) & 0x1F) * 40;
-
-            // Apply the extra data. Each byte in mapExtraData contains 4
-            // entries of 2 bits each - it covers 4 consecutive map data cells.
-            // We thus get the index of the byte to use by dividing our current
-            // map cell offset by 4, and the index of the entry within the byte
-            // by doing modulo 4. Since each entry is two bits in size, we also
-            // multiply the latter by two and this gives us a shift value to
-            // extract the bits we're interested in.
-            extraDataIndex = (srcRowOffset + col + gmCameraPosX) / 4;
-            extraDataShift = (srcRowOffset + col + gmCameraPosX) % 4 * 2;
-
-            foreground = foreground +
-              // Extract the 2 extra bits from the packed extra data
-              ((mapExtraData[extraDataIndex] >> extraDataShift) & 3) *
-
-              // This is conceptually a left shift by 5 followed by a
-              // multiplication by 40, but for some reason, it was coded this
-              // way. The left shift moves the 2 extra bits into the location
-              // within our foreground tile index where they belong (recall that
-              // the lower 5 bits are already set from the composite tile
-              // value), the multiply by 40 is for the same reason as explained
-              // above (to make the foreground tile value usable as a memory
-              // offset in BlitMaskedMapTile).
-              (32 * 40);
-
-            // Draw the background
-            BlitSolidTile(background, col + destOffset);
-
-            // Draw the foreground
-            DRAW_MASKED_TILE(foreground);
-          }
-          else // regular masked tile
-          {
-            DRAW_BACKDROP_TILE();
-            DRAW_MASKED_TILE(*pCurrentTile);
-          }
-        }
-        else // solid tile
-        {
-          if (HAS_TILE_ATTRIBUTE(*pCurrentTile, TA_ANIMATED)) // animated tile
-          {
-            if (HAS_TILE_ATTRIBUTE(*pCurrentTile, TA_SLOW_ANIMATION))
-            {
-              BlitSolidTile(
-                *pCurrentTile + gfxTileAnimationStepSlow,
-                col + destOffset);
-            }
-            else
-            {
-              BlitSolidTile(
-                *pCurrentTile + gfxTileAnimationStepFast,
-                col + destOffset);
-            }
-          }
-          else // no animation
-          {
-            BlitSolidTile(*pCurrentTile, col + destOffset);
-          }
-        }
-
-        col++;
-      }
-      while (col < VIEWPORT_WIDTH);
-
-
-      // Skip to the next tile row on screen, 40 bytes in memory are 320 pixels
-      destOffset += 40 * 8;
-
-      // Skip to next row in backdrop offset table, see UpdateBackdrop() and
-      // InitBackdropOffsetTable().
-      bdOffsetTablePtr += 80;
-
-      // Skip to the next row in the map data
-      srcRowOffset += mapWidth;
-    }
-    while (srcRowOffset < srcOffsetEnd);
-
-    //
-    // Update all other systems and draw sprites/particles
-    //
-    UpdateAndDrawActors();
-    UpdateAndDrawParticles();
-    UpdateAndDrawPlayerShots();
-    UpdateAndDrawEffects();
-    UpdateAndDrawWaterAreas();
-
-    // Now draw masked tiles that are meant to appear in front of sprites
-    for (col = 0; col < frontMaskedsIndex; col += 2)
-    {
-      BlitMaskedMapTile(
-        gfxMaskedTileData + frontMaskeds[col], frontMaskeds[col + 1]);
-    }
-
-    UpdateAndDrawTileDebris();
-  }
-
-  // Swap buffers
-  SetDrawPage(gfxCurrentDisplayPage);
-  SetDisplayPage(gfxCurrentDisplayPage = !gfxCurrentDisplayPage);
-
-#undef DRAW_BACKDROP_TILE
-#undef DRAW_MASKED_TILE
+  ctx->gfxCurrentDisplayPage = !ctx->gfxCurrentDisplayPage;
 }
 
 
@@ -597,7 +214,7 @@ void pascal UpdateAndDrawGame(void (*updatePlayerFunc)())
  * at the given location, not whether it's up against a wall.
  *
  * But wait, there's more! When checking for collision downwards, the
- * function also sets the global variable retConveyorBeltCheckResult to
+ * function also sets the global variable ctx->retConveyorBeltCheckResult to
  * indicate if the actor/sprite is currently on top of tiles with the
  * conveyor belt flag set, and which direction the conveyor belt is moving.
  *
@@ -610,22 +227,27 @@ void pascal UpdateAndDrawGame(void (*updatePlayerFunc)())
  * game's version of sloped surfaces, which are actually stairs that are made
  * to look like a slope with the help of masked (partially transparent) tiles.
  */
-int pascal CheckWorldCollision(
-  word direction, word actorId, word frame, word x, word y)
+int16_t pascal CheckWorldCollision(
+  Context* ctx,
+  word direction,
+  word actorId,
+  word frame,
+  word x,
+  word y)
 {
-  register int i;
+  register int16_t i;
   register word height;
   word far* tileData;
   bool isPlayer = false;
   bool atStairStep = false;
   word width;
   word offset;
-  int bboxTop;
+  int16_t bboxTop;
   word attributes;
 
-  retConveyorBeltCheckResult = CB_NONE;
+  ctx->retConveyorBeltCheckResult = CB_NONE;
 
-  offset = gfxActorInfoData[actorId] + (frame << 3);
+  offset = ctx->gfxActorInfoData[actorId] + (frame << 3);
   height = AINFO_HEIGHT(offset);
   width = AINFO_WIDTH(offset);
 
@@ -636,7 +258,7 @@ int pascal CheckWorldCollision(
   {
     isPlayer = true;
 
-    if (plPosX == 0 && direction == MD_LEFT)
+    if (ctx->plPosX == 0 && direction == MD_LEFT)
     {
       return CR_COLLISION;
     }
@@ -682,43 +304,58 @@ int pascal CheckWorldCollision(
       bboxTop = y - height + 1;
 
       // Top of the map is never considered solid
-      if (bboxTop < 0 || y == 0) { return CR_NONE; }
+      if (bboxTop < 0 || y == 0)
+      {
+        return CR_NONE;
+      }
 
       // Start at map tile underneath the sprite's top-left corner
-      tileData = mapData + ((y - height + 1) << mapWidthShift) + x;
+      tileData = ctx->mapData + ((y - height + 1) << ctx->mapWidthShift) + x;
 
       // Check the top edge. This is the entire length of the sprite for
       // horizontal shots, and only the top-most tile for vertical shots.
       for (i = 0; i < width; i++)
       {
-        attributes = *(gfxTilesetAttributes + (*(tileData + i) >> 3));
+        attributes = *(ctx->gfxTilesetAttributes + (*(tileData + i) >> 3));
 
         // Treat composite tiles as not solid - and abort the entire check.
-        if (*(tileData + i) & 0x8000) { return CR_NONE; }
+        if (*(tileData + i) & 0x8000)
+        {
+          return CR_NONE;
+        }
 
         // If any of the checked tiles is solid in any direction, we have a
         // hit
-        if (attributes & 0xF) { return CR_COLLISION; }
+        if (attributes & 0xF)
+        {
+          return CR_COLLISION;
+        }
       }
 
       // Start at map tile underneath the sprite's bottom-left corner
-      tileData = mapData + (y << mapWidthShift) + x;
+      tileData = ctx->mapData + (y << ctx->mapWidthShift) + x;
 
       // Check left edge, this is the entire height of the sprite for vertical
       // shots, and only the left-most tile for horizontal shots
       for (i = 0; i < height; i++)
       {
-        attributes = *(gfxTilesetAttributes + (*tileData >> 3));
+        attributes = *(ctx->gfxTilesetAttributes + (*tileData >> 3));
 
         // Treat composite tiles as not solid - and abort the entire check.
-        if (*tileData & 0x8000) { return CR_NONE; }
+        if (*tileData & 0x8000)
+        {
+          return CR_NONE;
+        }
 
         // If any of the checked tiles is solid in any direction, we have a
         // hit
-        if (attributes & 0xF) { return CR_COLLISION; }
+        if (attributes & 0xF)
+        {
+          return CR_COLLISION;
+        }
 
         // Go up by one tile
-        tileData -= mapWidth;
+        tileData -= ctx->mapWidth;
       }
 
       return CR_NONE;
@@ -727,10 +364,13 @@ int pascal CheckWorldCollision(
       bboxTop = y - height + 1;
 
       // Upper edge outside the map is never solid
-      if (bboxTop < 0) { return CR_NONE; }
+      if (bboxTop < 0)
+      {
+        return CR_NONE;
+      }
 
       // Start at map tile underneath top-left corner of the sprite
-      tileData = mapData + ((y - height + 1) << mapWidthShift) + x;
+      tileData = ctx->mapData + ((y - height + 1) << ctx->mapWidthShift) + x;
 
       if (isPlayer && HAS_TILE_ATTRIBUTE(*(tileData + 1), TA_CLIMBABLE))
       {
@@ -754,21 +394,22 @@ int pascal CheckWorldCollision(
           return CR_LADDER;
         }
 
-        if (inputMoveLeft || inputMoveRight)
+        if (ctx->inputMoveLeft || ctx->inputMoveRight)
         {
           // No-op
         }
         else
         {
-          if (inputMoveUp && HAS_TILE_ATTRIBUTE(*tileData, TA_LADDER))
+          if (ctx->inputMoveUp && HAS_TILE_ATTRIBUTE(*tileData, TA_LADDER))
           {
-            plPosX--;
+            ctx->plPosX--;
             return CR_LADDER;
           }
 
-          if (inputMoveUp && HAS_TILE_ATTRIBUTE(*(tileData + 2), TA_LADDER))
+          if (
+            ctx->inputMoveUp && HAS_TILE_ATTRIBUTE(*(tileData + 2), TA_LADDER))
           {
-            plPosX++;
+            ctx->plPosX++;
             return CR_LADDER;
           }
         }
@@ -778,10 +419,13 @@ int pascal CheckWorldCollision(
 
     case MD_DOWN:
       // Start at map tile underneath sprite's bottom-left corner
-      tileData = mapData + (y << mapWidthShift) + x;
+      tileData = ctx->mapData + (y << ctx->mapWidthShift) + x;
 
       // Bottom edge outside the map is never solid
-      if (y > mapBottom) { return CR_NONE; }
+      if (y > ctx->mapBottom)
+      {
+        return CR_NONE;
+      }
 
       // Check bottom edge of the sprite
       for (i = 0; i < width; i++)
@@ -789,15 +433,15 @@ int pascal CheckWorldCollision(
         // Conveyor belt checks
         if (HAS_TILE_ATTRIBUTE(*(tileData + i), TA_CONVEYOR_L))
         {
-          retConveyorBeltCheckResult = CB_LEFT;
+          ctx->retConveyorBeltCheckResult = CB_LEFT;
         }
 
         if (
           HAS_TILE_ATTRIBUTE(*(tileData + i), TA_CONVEYOR_R) &&
           (HAS_TILE_ATTRIBUTE(*(tileData + width - 1), TA_CONVEYOR_R) ||
-          !HAS_TILE_ATTRIBUTE(*(tileData + width - 1), TA_SOLID_TOP)))
+           !HAS_TILE_ATTRIBUTE(*(tileData + width - 1), TA_SOLID_TOP)))
         {
-          retConveyorBeltCheckResult = CB_RIGHT;
+          ctx->retConveyorBeltCheckResult = CB_RIGHT;
         }
 
         // Collision check
@@ -818,23 +462,29 @@ int pascal CheckWorldCollision(
     case MD_LEFT:
       bboxTop = y - height + 1;
 
-      if (bboxTop < 0) { return CR_NONE; }
+      if (bboxTop < 0)
+      {
+        return CR_NONE;
+      }
 
       // Left edge outside the map is always solid. This takes advantage of
       // unsigned wrap-around, so if x would be negative when treated as a
-      // signed value, then it will be larger than mapWidth if treated as
+      // signed value, then it will be larger than ctx->mapWidth if treated as
       // unsigned.
-      if (x > mapWidth) { return CR_COLLISION; }
+      if (x > ctx->mapWidth)
+      {
+        return CR_COLLISION;
+      }
 
       // Start at map tile underneath the sprite's bottom-left corner
-      tileData = mapData + (y << mapWidthShift) + x;
+      tileData = ctx->mapData + (y << ctx->mapWidthShift) + x;
 
       // Check the sprite's left edge
       for (i = 0; i < height; i++)
       {
         if (HAS_TILE_ATTRIBUTE(*tileData, TA_SOLID_RIGHT))
         {
-          if (isPlayer && plState == PS_NORMAL)
+          if (isPlayer && ctx->plState == PS_NORMAL)
           {
             atStairStep = true;
 
@@ -852,7 +502,7 @@ int pascal CheckWorldCollision(
         }
 
         // Go up by one map tile
-        tileData -= mapWidth;
+        tileData -= ctx->mapWidth;
       }
 
       // When at a stair step, move the player up by one and report "no
@@ -861,7 +511,7 @@ int pascal CheckWorldCollision(
       // in player.c).
       if (atStairStep)
       {
-        plPosY--;
+        ctx->plPosY--;
       }
 
       return CR_NONE;
@@ -869,20 +519,26 @@ int pascal CheckWorldCollision(
     case MD_RIGHT:
       bboxTop = y - height + 1;
 
-      if (bboxTop < 0) { return CR_NONE; }
+      if (bboxTop < 0)
+      {
+        return CR_NONE;
+      }
 
       // Right edge outside the map is always solid
-      if (x + width - 1 >= mapWidth) { return CR_COLLISION; }
+      if (x + width - 1 >= ctx->mapWidth)
+      {
+        return CR_COLLISION;
+      }
 
       // Start at map tile underneath the sprite's bottom-right corner
-      tileData = mapData + (y << mapWidthShift) + x + width - 1;
+      tileData = ctx->mapData + (y << ctx->mapWidthShift) + x + width - 1;
 
       // Check sprite's right edge
       for (i = 0; i < height; i++)
       {
         if (HAS_TILE_ATTRIBUTE(*tileData, TA_SOLID_LEFT))
         {
-          if (isPlayer && plState == PS_NORMAL)
+          if (isPlayer && ctx->plState == PS_NORMAL)
           {
             atStairStep = true;
 
@@ -899,7 +555,7 @@ int pascal CheckWorldCollision(
           }
         }
 
-        tileData -= mapWidth;
+        tileData -= ctx->mapWidth;
       }
 
       // When at a stair step, move the player up by one and report "no
@@ -908,7 +564,7 @@ int pascal CheckWorldCollision(
       // in player.c).
       if (atStairStep)
       {
-        plPosY--;
+        ctx->plPosY--;
       }
 
       return CR_NONE;
@@ -919,41 +575,42 @@ int pascal CheckWorldCollision(
 
 
 /** Remove all currently active effects and player shots */
-void ResetEffectsAndPlayerShots(void)
+void ResetEffectsAndPlayerShots(Context* ctx)
 {
   register word i;
 
   for (i = 0; i < MAX_NUM_EFFECTS; i++)
   {
-    gmEffectStates[i].active = 0;
+    ctx->gmEffectStates[i].active = 0;
 
     if (i < MAX_NUM_PLAYER_SHOTS)
     {
-      gmPlayerShotStates[i].active = 0;
+      ctx->gmPlayerShotStates[i].active = 0;
     }
   }
 }
 
 
 /** Erase map data and spawn flying debris for the specified region */
-void pascal Map_DestroySection(word left, word top, word right, word bottom)
+void pascal
+  Map_DestroySection(Context* ctx, word left, word top, word right, word bottom)
 {
-  int i;
+  int16_t i;
   word x;
   word y;
   word tileValue;
 
-  PlaySound(SND_BIG_EXPLOSION);
+  PlaySound(ctx, SND_BIG_EXPLOSION);
 
   right += 1;
   bottom += 1;
 
   // Set up state for flying tile debris
-  gmExplodingSectionLeft = left;
-  gmExplodingSectionTop = top;
-  gmExplodingSectionRight = right;
-  gmExplodingSectionBottom = bottom;
-  gmExplodingSectionTicksElapsed = 1;
+  ctx->gmExplodingSectionLeft = left;
+  ctx->gmExplodingSectionTop = top;
+  ctx->gmExplodingSectionRight = right;
+  ctx->gmExplodingSectionBottom = bottom;
+  ctx->gmExplodingSectionTicksElapsed = 1;
 
   // Spawn pieces of debris for each tile in the affected region, and erase
   // map data
@@ -963,7 +620,7 @@ void pascal Map_DestroySection(word left, word top, word right, word bottom)
   {
     for (x = left; x < right; x++)
     {
-      tileValue = Map_GetTile(x, y);
+      tileValue = Map_GetTile(ctx, x, y);
 
       if (tileValue) // skip empty map cells
       {
@@ -976,52 +633,43 @@ void pascal Map_DestroySection(word left, word top, word right, word bottom)
         // 3: word x
         // 4: word y
 
-        gmTileDebrisStates[i + 0] = 3 - RandomNumber() % 6;
-        gmTileDebrisStates[i + 1] = RandomNumber() % 5;
-        gmTileDebrisStates[i + 2] = tileValue;
-        gmTileDebrisStates[i + 3] = x - gmCameraPosX;
-        gmTileDebrisStates[i + 4] = y - gmCameraPosY;
+        ctx->gmTileDebrisStates[i + 0] = 3 - RandomNumber(ctx) % 6;
+        ctx->gmTileDebrisStates[i + 1] = RandomNumber(ctx) % 5;
+        ctx->gmTileDebrisStates[i + 2] = tileValue;
+        ctx->gmTileDebrisStates[i + 3] = x - ctx->gmCameraPosX;
+        ctx->gmTileDebrisStates[i + 4] = y - ctx->gmCameraPosY;
 
         // Advance to the start of the next tile debris state object
         i += 5;
 
-        Map_SetTile(0, x, y);
+        Map_SetTile(ctx, 0, x, y);
       }
     }
   }
 }
 
 
-/** Draw a single solid tile at the given location */
-static void pascal DrawTileDebris(word tileValue, word x, word y)
-{
-  if (x > 0 && x < VIEWPORT_WIDTH && y > 0 && y < VIEWPORT_HEIGHT + 1)
-  {
-    BlitSolidTile(tileValue, x + y * (40 * 8));
-  }
-}
-
-
 /** Update and draw a currently active tile explosion */
-void UpdateAndDrawTileDebris(void)
+void UpdateAndDrawTileDebris(Context* ctx)
 {
   // [PERF] Missing `static` causes a copy operation here
-  const int Y_MOVEMENT[] = { -3, -3, -2, -2, -1, 0, 0, 1, 2, 2, 3 };
+  const int16_t Y_MOVEMENT[] = {
+    -3, -3, -2, -2, -1, 0, 0, 1, 2, 2, 3, 256, 770, 1284};
 
   register word i;
   register word size;
   word far* debris;
 
   // If there's no flying tile debris right now, stop here.
-  if (gmExplodingSectionTicksElapsed == 0) { return; }
+  if (ctx->gmExplodingSectionTicksElapsed == 0)
+  {
+    return;
+  }
 
   // size here is the number of word values we need to process. Each tile debris
   // piece occupies 5 words.
-  size =
-    (gmExplodingSectionRight - gmExplodingSectionLeft) *
-    (gmExplodingSectionBottom - gmExplodingSectionTop) * 5;
-
-  EGA_SETUP_LATCH_COPY();
+  size = (ctx->gmExplodingSectionRight - ctx->gmExplodingSectionLeft) *
+    (ctx->gmExplodingSectionBottom - ctx->gmExplodingSectionTop) * 5;
 
   for (i = 0; i < size; i += 5)
   {
@@ -1033,9 +681,9 @@ void UpdateAndDrawTileDebris(void)
     // 2: word tileValue;
     // 3: word x
     // 4: word y
-    debris = gmTileDebrisStates + i;
+    debris = ctx->gmTileDebrisStates + i;
 
-    debris[3] += debris[0];             // debris->x += xVelocity
+    debris[3] += debris[0]; // debris->x += xVelocity
     debris[4] += Y_MOVEMENT[debris[1]]; // debris->y += Y_MOVEMENT[
                                         //   debris->tableIndex]
 
@@ -1052,7 +700,7 @@ void UpdateAndDrawTileDebris(void)
     }
 
     // arguments are: tileValue, x, y
-    DrawTileDebris(debris[2], debris[3], debris[4]);
+    DrawTileDebris(ctx, debris[2], debris[3], debris[4]);
   }
 
   // Advance the timer, until the maximum time is reached. At that point, we
@@ -1062,10 +710,10 @@ void UpdateAndDrawTileDebris(void)
   //
   // [NOTE] 80 seems excessively high, given that not a single tile debris
   // piece remains visible after just 11 frames.
-  gmExplodingSectionTicksElapsed++;
-  if (gmExplodingSectionTicksElapsed == 80)
+  ctx->gmExplodingSectionTicksElapsed++;
+  if (ctx->gmExplodingSectionTicksElapsed == 80)
   {
-    gmExplodingSectionTicksElapsed = 0;
+    ctx->gmExplodingSectionTicksElapsed = 0;
   }
 }
 
@@ -1094,20 +742,21 @@ static bool pascal EffectIsDamaging(word actorId)
  *
  * Does nothing if the maximum number of effects is already reached.
  */
-bool pascal SpawnEffect(word id, word x, word y, word type, word spawnDelay)
+bool pascal
+  SpawnEffect(Context* ctx, word id, word x, word y, word type, word spawnDelay)
 {
   register word i;
-  register word offset = gfxActorInfoData[id];
+  register word offset = ctx->gfxActorInfoData[id];
   EffectState* state;
   word numFrames = AINFO_NUM_FRAMES(offset);
 
   // Search for a free slot in the effect states list
   for (i = 0; i < MAX_NUM_EFFECTS; i++)
   {
-    if (gmEffectStates[i].active == 0)
+    if (ctx->gmEffectStates[i].active == 0)
     {
       // We found a slot, set it up
-      state = gmEffectStates + i;
+      state = ctx->gmEffectStates + i;
 
       // If we're spawning a fire bomb fire, only do it if there's solid ground
       // below. Return true to indicate that spawning failed.
@@ -1118,7 +767,7 @@ bool pascal SpawnEffect(word id, word x, word y, word type, word spawnDelay)
       // there instead.
       if (
         id == ACT_FIRE_BOMB_FIRE &&
-        !CheckWorldCollision(MD_DOWN, ACT_FIRE_BOMB_FIRE, 0, x, y + 1))
+        !CheckWorldCollision(ctx, MD_DOWN, ACT_FIRE_BOMB_FIRE, 0, x, y + 1))
       {
         return true;
       }
@@ -1148,16 +797,20 @@ bool pascal SpawnEffect(word id, word x, word y, word type, word spawnDelay)
  *
  * See game3.c for various examples of how this function is used.
  */
-void pascal SpawnDestructionEffects(word handle, int* spec, word actorId)
+void pascal SpawnDestructionEffects(
+  Context* ctx,
+  word handle,
+  int16_t* spec,
+  word actorId)
 {
-  register ActorState* actor = gmActorStates + handle;
+  register ActorState* actor = ctx->gmActorStates + handle;
   word entriesLeft = *spec;
   spec++;
 
   while (entriesLeft--)
   {
     SpawnEffect(
-      actorId, actor->x + spec[0], actor->y + spec[1], spec[2], spec[3]);
+      ctx, actorId, actor->x + spec[0], actor->y + spec[1], spec[2], spec[3]);
     spec += 4;
   }
 }
@@ -1175,7 +828,8 @@ void pascal SpawnDestructionEffects(word handle, int* spec, word actorId)
  *
  * Does nothing if the maximum number of effects is already reached.
  */
-void pascal SpawnBurnEffect(word effectId, word sourceId, word x, word y)
+void pascal
+  SpawnBurnEffect(Context* ctx, word effectId, word sourceId, word x, word y)
 {
   register word offset;
   register word i;
@@ -1185,17 +839,17 @@ void pascal SpawnBurnEffect(word effectId, word sourceId, word x, word y)
 
   // The continually spawning effects should appear in an area corresponding
   // to the source sprite's bounding box, so we apply the x/y offset here.
-  offset = gfxActorInfoData[sourceId];
+  offset = ctx->gfxActorInfoData[sourceId];
   x += AINFO_X_OFFSET(offset);
   y += AINFO_Y_OFFSET(offset);
 
   // Search for an available slot
   for (i = 0; i < MAX_NUM_EFFECTS; i++)
   {
-    if (gmEffectStates[i].active == 0)
+    if (ctx->gmEffectStates[i].active == 0)
     {
       // We found a free slot, set it up
-      state = gmEffectStates + i;
+      state = ctx->gmEffectStates + i;
 
       state->active = 18;
       state->id = sourceId;
@@ -1205,7 +859,7 @@ void pascal SpawnBurnEffect(word effectId, word sourceId, word x, word y)
       state->framesToLive = effectId;
 
       // Get height & width of the effect sprite
-      offset = gfxActorInfoData[effectId];
+      offset = ctx->gfxActorInfoData[effectId];
       height = AINFO_HEIGHT(offset);
       width = AINFO_WIDTH(offset);
 
@@ -1222,7 +876,7 @@ void pascal SpawnBurnEffect(word effectId, word sourceId, word x, word y)
 
       // Store height and width of the _source_ sprite, so that we can define
       // the spawn area
-      offset = gfxActorInfoData[sourceId];
+      offset = ctx->gfxActorInfoData[sourceId];
       height = AINFO_HEIGHT(offset);
       width = AINFO_WIDTH(offset);
       state->movementStep = height;
@@ -1239,24 +893,27 @@ void pascal SpawnBurnEffect(word effectId, word sourceId, word x, word y)
 
 
 /** Update and draw all currently active effects */
-void UpdateAndDrawEffects(void)
+void UpdateAndDrawEffects(Context* ctx)
 {
   register EffectState* state;
-  register int j;
+  register int16_t j;
   word i;
 
   for (i = 0; i < MAX_NUM_EFFECTS; i++)
   {
-    if (!gmEffectStates[i].active) { continue; }
+    if (!ctx->gmEffectStates[i].active)
+    {
+      continue;
+    }
 
-    state = gmEffectStates + i;
+    state = ctx->gmEffectStates + i;
 
     if (state->type == EM_SCORE_NUMBER)
     {
       // For score numbers, the spawnDelay field is used to keep track of
       // elapsed time.
-      const byte SCORE_NUMBER_ANIMATION[] =
-        { 0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1 };
+      const byte SCORE_NUMBER_ANIMATION[] = {
+        0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1};
 
       state->spawnDelay++;
 
@@ -1279,6 +936,7 @@ void UpdateAndDrawEffects(void)
       }
 
       DrawActor(
+        ctx,
         state->id,
         SCORE_NUMBER_ANIMATION[(state->active - 1) % 14],
         state->x,
@@ -1299,9 +957,10 @@ void UpdateAndDrawEffects(void)
         // So this spawns an effect somewhere within the source sprite's
         // bounding box, randomly placed.
         SpawnEffect(
+          ctx,
           state->framesToLive, // ID to spawn
-          state->x + (int)RandomNumber() % state->spawnDelay,
-          state->y - (int)RandomNumber() % state->movementStep,
+          state->x + (int16_t)RandomNumber(ctx) % state->spawnDelay,
+          state->y - (int16_t)RandomNumber(ctx) % state->movementStep,
           EM_RISE_UP,
           0);
       }
@@ -1313,7 +972,8 @@ void UpdateAndDrawEffects(void)
       if (state->type == EM_NONE || state->type == EM_RISE_UP)
       {
         // Delete effects that have disappeared from view
-        if (!IsSpriteOnScreen(state->id, state->active - 1, state->x, state->y))
+        if (!IsSpriteOnScreen(
+              ctx, state->id, state->active - 1, state->x, state->y))
         {
           state->active = 0;
           continue;
@@ -1330,22 +990,18 @@ void UpdateAndDrawEffects(void)
         // on the first frame.
         if (state->id == ACT_EXPLOSION_FX_1 && state->active == 1)
         {
-          if (RandomNumber() & 1)
+          if (RandomNumber(ctx) & 1)
           {
-            PlaySound(SND_EXPLOSION);
+            PlaySound(ctx, SND_EXPLOSION);
           }
           else
           {
-            PlaySound(SND_ALTERNATE_EXPLOSION);
+            PlaySound(ctx, SND_ALTERNATE_EXPLOSION);
           }
         }
 
         DrawActor(
-          state->id,
-          state->active - 1,
-          state->x,
-          state->y,
-          DS_NORMAL);
+          ctx, state->id, state->active - 1, state->x, state->y, DS_NORMAL);
 
         // Special case for ACT_FLAME_FX: Burn away tiles which have the
         // 'flammable' attribute
@@ -1353,25 +1009,29 @@ void UpdateAndDrawEffects(void)
         {
           // List of pairs of (x, y)
           static sbyte TILE_BURN_OFFSETS[] = {
-            0, 0, 0,-1, 0, -2, 1, -2, 2, -2, 2, -1, 2, 0, 1, 0 };
+            0, 0, 0, -1, 0, -2, 1, -2, 2, -2, 2, -1, 2, 0, 1, 0};
 
           for (j = 0; j < 16; j += 2)
           {
-            if (
-              HAS_TILE_ATTRIBUTE(Map_GetTile(
-                state->x + TILE_BURN_OFFSETS[j],
-                state->y + TILE_BURN_OFFSETS[j + 1]), TA_FLAMMABLE))
+            if (HAS_TILE_ATTRIBUTE(
+                  Map_GetTile(
+                    ctx,
+                    state->x + TILE_BURN_OFFSETS[j],
+                    state->y + TILE_BURN_OFFSETS[j + 1]),
+                  TA_FLAMMABLE))
             {
               Map_SetTile(
+                ctx,
                 0,
                 state->x + TILE_BURN_OFFSETS[j],
                 state->y + TILE_BURN_OFFSETS[j + 1]);
               SpawnEffect(
+                ctx,
                 ACT_FLAME_FX,
                 state->x + TILE_BURN_OFFSETS[j] - 1,
                 state->y + TILE_BURN_OFFSETS[j + 1] + 1,
                 EM_NONE,
-                (int)RandomNumber() & 3);
+                (int16_t)RandomNumber(ctx) & 3);
             }
           }
         }
@@ -1397,7 +1057,8 @@ void UpdateAndDrawEffects(void)
         // been alive for 9 frames (movementStep is advanced by 2 every frame)
         if (
           state->movementStep > 17 &&
-          !IsSpriteOnScreen(state->id, state->active - 1, state->x, state->y) &&
+          !IsSpriteOnScreen(
+            ctx, state->id, state->active - 1, state->x, state->y) &&
           state->movementStep > 12) // [NOTE] Redundant, due to the `> 17` above
         {
           state->active = 0;
@@ -1412,11 +1073,7 @@ void UpdateAndDrawEffects(void)
         }
 
         DrawActor(
-          state->id,
-          state->active - 1,
-          state->x,
-          state->y,
-          DS_NORMAL);
+          ctx, state->id, state->active - 1, state->x, state->y, DS_NORMAL);
 
         // Keep looping the animation
         state->active++;
@@ -1426,7 +1083,8 @@ void UpdateAndDrawEffects(void)
         }
 
         state->x += EFFECT_MOVEMENT_TABLES[state->type][state->movementStep];
-        state->y += EFFECT_MOVEMENT_TABLES[state->type][state->movementStep + 1];
+        state->y +=
+          EFFECT_MOVEMENT_TABLES[state->type][state->movementStep + 1];
 
         state->movementStep += 2;
 
@@ -1441,11 +1099,19 @@ void UpdateAndDrawEffects(void)
       // Handle effects that damage the player. This doesn't apply to score
       // numbers and burn effect spawners.
       if (
-        EffectIsDamaging(state->id) && AreSpritesTouching(
-          state->id, state->active - 1, state->x, state->y,
-          plActorId, plAnimationFrame, plPosX, plPosY))
+        EffectIsDamaging(state->id) &&
+        AreSpritesTouching(
+          ctx,
+          state->id,
+          state->active - 1,
+          state->x,
+          state->y,
+          ctx->plActorId,
+          ctx->plAnimationFrame,
+          ctx->plPosX,
+          ctx->plPosY))
       {
-        DamagePlayer();
+        DamagePlayer(ctx);
       }
     }
   }
@@ -1453,7 +1119,8 @@ void UpdateAndDrawEffects(void)
 
 
 /** Spawn a player shot into the game world, if possible */
-void pascal SpawnPlayerShot(word id, word x, word y, word direction)
+void pascal
+  SpawnPlayerShot(Context* ctx, word id, word x, word y, word direction)
 {
   register word i;
   register word offset;
@@ -1468,7 +1135,7 @@ void pascal SpawnPlayerShot(word id, word x, word y, word direction)
     case ACT_DUKE_FLAME_SHOT_DOWN:
     case ACT_DUKE_FLAME_SHOT_LEFT:
     case ACT_DUKE_FLAME_SHOT_RIGHT:
-      PlaySound(SND_FLAMETHROWER_SHOT);
+      PlaySound(ctx, SND_FLAMETHROWER_SHOT);
       break;
 
     case ACT_DUKE_LASER_SHOT_HORIZONTAL:
@@ -1479,11 +1146,11 @@ void pascal SpawnPlayerShot(word id, word x, word y, word direction)
         muzzleY--;
       }
 
-      PlaySound(SND_DUKE_LASER_SHOT);
+      PlaySound(ctx, SND_DUKE_LASER_SHOT);
       break;
 
     default:
-      PlaySound(SND_NORMAL_SHOT);
+      PlaySound(ctx, SND_NORMAL_SHOT);
       break;
   }
 
@@ -1532,14 +1199,14 @@ void pascal SpawnPlayerShot(word id, word x, word y, word direction)
   // when firing to the left. Rockets that are fired downwards also spawn
   // too far up.
 
-  offset = gfxActorInfoData[id];
+  offset = ctx->gfxActorInfoData[id];
   numFrames = AINFO_NUM_FRAMES(offset);
 
   for (i = 0; i < MAX_NUM_PLAYER_SHOTS; i++)
   {
-    if (gmPlayerShotStates[i].active == 0)
+    if (ctx->gmPlayerShotStates[i].active == 0)
     {
-      state = gmPlayerShotStates + i;
+      state = ctx->gmPlayerShotStates + i;
 
       state->active = 1;
       state->id = id;
@@ -1551,6 +1218,7 @@ void pascal SpawnPlayerShot(word id, word x, word y, word direction)
       if (state->active < 28) // [NOTE] Always true
       {
         SpawnEffect(
+          ctx,
           direction + ACT_MUZZLE_FLASH_UP - SD_UP,
           muzzleX,
           muzzleY,
@@ -1565,37 +1233,39 @@ void pascal SpawnPlayerShot(word id, word x, word y, word direction)
 
 
 /** Update and draw all currently active player shots */
-void UpdateAndDrawPlayerShots(void)
+void UpdateAndDrawPlayerShots(Context* ctx)
 {
   // See GET_FIELD below. This is a list of memory offsets into the PlayerShot
   // struct, for referencing the y and x fields.
-  static const byte OFFSET_TO_POS_FIELD[] = { 4, 4, 3, 3 };
+  static const byte OFFSET_TO_POS_FIELD[] = {4, 4, 3, 3};
 
   // Lookup tables for shot movement. The entries are ordered by shot direction:
   // up, down, left, right. The value is added to the shot's appropriate data
   // field (x or y) in order to move the shot.
-  static const sbyte SLOW_SHOT_MOVEMENT[] = { -2, 2, -2, 2 };
-  static const sbyte FAST_SHOT_MOVEMENT[] = { -5, 5, -5, 5 };
-  static const sbyte MEDIUM_SHOT_MOVEMENT[] = { -3, 3, -3, 3 };
+  static const sbyte SLOW_SHOT_MOVEMENT[] = {-2, 2, -2, 2};
+  static const sbyte FAST_SHOT_MOVEMENT[] = {-5, 5, -5, 5};
+  static const sbyte MEDIUM_SHOT_MOVEMENT[] = {-3, 3, -3, 3};
 
   // This is a list of pairs of (x, y)
-  static const sbyte ROCKET_SMOKE_SPAWN_OFFSET[] = { 0, 0, 0, -2, 2, 0, 0, 0 };
+  static const sbyte ROCKET_SMOKE_SPAWN_OFFSET[] = {0, 0, 0, -2, 2, 0, 0, 0};
 
   PlayerShot* state;
   word i;
 
 
   // [UNSAFE] This relies on the exact memory layout of the PlayerShot struct.
-#define GET_FIELD(dir) \
-  *(((word*)state) + OFFSET_TO_POS_FIELD[dir - SD_UP])
+#define GET_FIELD(dir) *(((word*)state) + OFFSET_TO_POS_FIELD[dir - SD_UP])
 
 
   for (i = 0; i < MAX_NUM_PLAYER_SHOTS; i++)
   {
     // Skip deleted shots
-    if (gmPlayerShotStates[i].active == 0) { continue; }
+    if (ctx->gmPlayerShotStates[i].active == 0)
+    {
+      continue;
+    }
 
-    state = gmPlayerShotStates + i;
+    state = ctx->gmPlayerShotStates + i;
 
     // TestShotCollision() in game3.c sets the high bit to mark shots that have
     // hit an enemy. These shots are still drawn for one more frame, and then
@@ -1605,21 +1275,23 @@ void UpdateAndDrawPlayerShots(void)
       // Unset the marker bit, since we need the active field in order to
       // determine the right animation frame.
       state->active &= 0x7FFF;
-      DrawActor(state->id, state->active - 1, state->x, state->y, DS_NORMAL);
+      DrawActor(
+        ctx, state->id, state->active - 1, state->x, state->y, DS_NORMAL);
 
       state->active = 0; // delete
     }
     else
     {
       // Remove shots that have left the playing field (aka screen)
-      if (
-        !IsSpriteOnScreen(state->id, state->active - 1, state->x, state->y))
+      if (!IsSpriteOnScreen(
+            ctx, state->id, state->active - 1, state->x, state->y))
       {
         state->active = 0; // delete
         continue;
       }
 
-      DrawActor(state->id, state->active - 1, state->x, state->y, DS_NORMAL);
+      DrawActor(
+        ctx, state->id, state->active - 1, state->x, state->y, DS_NORMAL);
 
       // Move the shot, according to its type
       switch (state->id)
@@ -1627,12 +1299,18 @@ void UpdateAndDrawPlayerShots(void)
         case ACT_REGULAR_SHOT_HORIZONTAL:
         case ACT_REGULAR_SHOT_VERTICAL:
           if (CheckWorldCollision(
-            MD_PROJECTILE, state->id, state->active - 1, state->x, state->y))
+                ctx,
+                MD_PROJECTILE,
+                state->id,
+                state->active - 1,
+                state->x,
+                state->y))
           {
             // Spawn a flame at the impact location. This makes it possible to
             // burn flammable tiles with the regular weapon
             // (see UpdateAndDrawEffects()).
             SpawnEffect(
+              ctx,
               ACT_FLAME_FX,
               state->x - (state->id == ACT_REGULAR_SHOT_VERTICAL ? 1 : 0),
               state->y + 1,
@@ -1642,8 +1320,8 @@ void UpdateAndDrawPlayerShots(void)
           }
           else
           {
-            GET_FIELD(state->direction)
-              += SLOW_SHOT_MOVEMENT[state->direction - SD_UP];
+            GET_FIELD(state->direction) +=
+              SLOW_SHOT_MOVEMENT[state->direction - SD_UP];
 
             // Animation
             //
@@ -1659,8 +1337,8 @@ void UpdateAndDrawPlayerShots(void)
         case ACT_DUKE_LASER_SHOT_HORIZONTAL:
         case ACT_DUKE_LASER_SHOT_VERTICAL:
           // The laser flies through walls, so no collision checking
-          GET_FIELD(state->direction)
-            += FAST_SHOT_MOVEMENT[state->direction - SD_UP];
+          GET_FIELD(state->direction) +=
+            FAST_SHOT_MOVEMENT[state->direction - SD_UP];
           break;
 
         case ACT_REACTOR_FIRE_L:
@@ -1675,8 +1353,8 @@ void UpdateAndDrawPlayerShots(void)
             state->active = 1;
           }
 
-          GET_FIELD(state->direction)
-            += MEDIUM_SHOT_MOVEMENT[state->direction - SD_UP];
+          GET_FIELD(state->direction) +=
+            MEDIUM_SHOT_MOVEMENT[state->direction - SD_UP];
           break;
 
 
@@ -1691,8 +1369,8 @@ void UpdateAndDrawPlayerShots(void)
           // See UpdateAndDrawEffects()
 
           // The flame thrower flies through walls, so no collision checking
-          GET_FIELD(state->direction)
-            += FAST_SHOT_MOVEMENT[state->direction - SD_UP];
+          GET_FIELD(state->direction) +=
+            FAST_SHOT_MOVEMENT[state->direction - SD_UP];
           break;
 
         case ACT_DUKE_ROCKET_UP:
@@ -1706,16 +1384,18 @@ void UpdateAndDrawPlayerShots(void)
               ROCKET_SMOKE_SPAWN_OFFSET[(state->id - SD_UP) * 2 + 1];
 
             if (CheckWorldCollision(
-              MD_PROJECTILE,
-              state->id,
-              state->active - 1,
-              state->x,
-              state->y))
+                  ctx,
+                  MD_PROJECTILE,
+                  state->id,
+                  state->active - 1,
+                  state->x,
+                  state->y))
             {
               // Spawn an explosion effect near the location of impact
               if (state->id < ACT_DUKE_ROCKET_LEFT)
               {
                 SpawnEffect(
+                  ctx,
                   ACT_EXPLOSION_FX_2,
                   state->x - 2,
                   state->y + 1,
@@ -1725,6 +1405,7 @@ void UpdateAndDrawPlayerShots(void)
               else
               {
                 SpawnEffect(
+                  ctx,
                   ACT_EXPLOSION_FX_2,
                   state->x - 1,
                   state->y + 2,
@@ -1732,26 +1413,27 @@ void UpdateAndDrawPlayerShots(void)
                   0);
               }
 
-              PlaySound(SND_EXPLOSION);
+              PlaySound(ctx, SND_EXPLOSION);
 
               // Spawn flames at the impact location. This makes it possible to
               // burn flammable tiles with the rocket launcher
               // (see UpdateAndDrawEffects()).
-              SpawnBurnEffect(ACT_FLAME_FX, state->id, state->x, state->y);
+              SpawnBurnEffect(ctx, ACT_FLAME_FX, state->id, state->x, state->y);
               state->active = 0; // delete
             }
             else
             {
               // Spawn smoke puffs to mark the rocket's trail
               SpawnEffect(
+                ctx,
                 ACT_SMOKE_PUFF_FX,
                 state->x + smokeSpawnX,
                 state->y + smokeSpawnY,
                 EM_NONE,
                 0);
 
-              GET_FIELD(state->direction)
-                += SLOW_SHOT_MOVEMENT[state->direction - SD_UP];
+              GET_FIELD(state->direction) +=
+                SLOW_SHOT_MOVEMENT[state->direction - SD_UP];
             }
           }
       }
@@ -1760,3 +1442,5 @@ void UpdateAndDrawPlayerShots(void)
 
 #undef GET_FIELD
 }
+
+RIGEL_RESTORE_WARNINGS

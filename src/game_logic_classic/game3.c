@@ -23,6 +23,16 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "base/warnings.hpp"
+
+#include "actors.h"
+#include "common.h"
+#include "gamedefs.h"
+#include "sounds.h"
+#include "vars.h"
+
+
+RIGEL_DISABLE_WARNINGS
 
 /*******************************************************************************
 
@@ -41,11 +51,34 @@ also found here.
 
 *******************************************************************************/
 
-void pascal SpawnActor(word id, word x, word y);
+/** Replacement for C library's abs */
+static int16_t DN2_abs(int16_t val)
+{
+  if (val < 0)
+  {
+    return -val;
+  }
+
+  return val;
+}
+
+
+/** Teleport to the given position
+ *
+ * This function sets up some state, the actual position change and the fade
+ * transition are handled by RunInGameLoop().
+ */
+void pascal TeleportTo(Context* ctx, word x, word y)
+{
+  ctx->gmIsTeleporting = true;
+  ctx->gmTeleportTargetPosX = x;
+  ctx->gmTeleportTargetPosY = y;
+}
 
 
 /** Initialize actor state at given list index, based on the parameters */
 void pascal InitActorState(
+  Context* ctx,
   word listIndex,
   ActorUpdateFunc updateFunc,
   word id,
@@ -63,7 +96,7 @@ void pascal InitActorState(
   word var5,
   word scoreGiven)
 {
-  ActorState* actor = gmActorStates + listIndex;
+  ActorState* actor = ctx->gmActorStates + listIndex;
 
   actor->id = id;
   actor->frame = 0;
@@ -96,7 +129,7 @@ void pascal InitActorState(
  * UpdateAndDrawPlayerShots().
  *
  * In addition to the return value, a second value is returned via the global
- * variable retPlayerShotDirection, which indicates which direction the
+ * variable ctx->retPlayerShotDirection, which indicates which direction the
  * player shot was moving into (for horizontal shots only).
  *
  * Since the collision detection works by going through the list of actors
@@ -104,14 +137,17 @@ void pascal InitActorState(
  * by one shot each frame, but a single shot can cause damage to multiple
  * actors.
  */
-byte pascal TestShotCollision(word handle)
+byte pascal TestShotCollision(Context* ctx, word handle)
 {
   PlayerShot* shot;
-  ActorState* actor = gmActorStates + handle;
+  ActorState* actor = ctx->gmActorStates + handle;
   word i;
 
   // The player can't be hit by their own shots
-  if (actor->id == ACT_DUKE_L || actor->id == ACT_DUKE_R) { return 0; }
+  if (actor->id == ACT_DUKE_L || actor->id == ACT_DUKE_R)
+  {
+    return 0;
+  }
 
   // Test fire bomb fires
   for (i = 0; i < MAX_NUM_EFFECTS; i++)
@@ -123,17 +159,18 @@ byte pascal TestShotCollision(word handle)
     // make this much more efficient due to short-circuiting.
     if (
       AreSpritesTouching(
+        ctx,
         actor->id,
         actor->frame,
         actor->x,
         actor->y,
         ACT_FIRE_BOMB_FIRE,
-        gmEffectStates[i].active - 1,
-        gmEffectStates[i].x,
-        gmEffectStates[i].y) &&
-      gmEffectStates[i].active &&
-      gmEffectStates[i].id == ACT_FIRE_BOMB_FIRE &&
-      gmEffectStates[i].spawnDelay <= 1)
+        ctx->gmEffectStates[i].active - 1,
+        ctx->gmEffectStates[i].x,
+        ctx->gmEffectStates[i].y) &&
+      ctx->gmEffectStates[i].active &&
+      ctx->gmEffectStates[i].id == ACT_FIRE_BOMB_FIRE &&
+      ctx->gmEffectStates[i].spawnDelay <= 1)
     {
       return 1;
     }
@@ -142,15 +179,25 @@ byte pascal TestShotCollision(word handle)
   // Test player shots
   for (i = 0; i < MAX_NUM_PLAYER_SHOTS; i++)
   {
-    if (gmPlayerShotStates[i].active == 0) { continue; }
+    if (ctx->gmPlayerShotStates[i].active == 0)
+    {
+      continue;
+    }
 
-    shot = gmPlayerShotStates + i;
+    shot = ctx->gmPlayerShotStates + i;
 
     if (AreSpritesTouching(
-      actor->id, actor->frame, actor->x, actor->y,
-      shot->id, shot->active - 1, shot->x, shot->y))
+          ctx,
+          actor->id,
+          actor->frame,
+          actor->x,
+          actor->y,
+          shot->id,
+          shot->active - 1,
+          shot->x,
+          shot->y))
     {
-      retPlayerShotDirection = shot->direction;
+      ctx->retPlayerShotDirection = shot->direction;
 
       switch (shot->id)
       {
@@ -176,14 +223,14 @@ byte pascal TestShotCollision(word handle)
         case ACT_DUKE_ROCKET_RIGHT:
           shot->active = shot->active | 0x8000; // deactivate shot
           SpawnEffect(
-            ACT_EXPLOSION_FX_2, shot->x - 3, shot->y + 3, EM_NONE, 0);
+            ctx, ACT_EXPLOSION_FX_2, shot->x - 3, shot->y + 3, EM_NONE, 0);
           return WPN_DAMAGE_ROCKET_LAUNCHER;
 
         case ACT_REACTOR_FIRE_L:
         case ACT_REACTOR_FIRE_R:
         case ACT_DUKES_SHIP_LASER_SHOT:
           SpawnEffect(
-            ACT_EXPLOSION_FX_2, shot->x - 3, shot->y + 3, EM_NONE, 0);
+            ctx, ACT_EXPLOSION_FX_2, shot->x - 3, shot->y + 3, EM_NONE, 0);
           return WPN_DAMAGE_SHIP_LASER;
       }
     }
@@ -194,8 +241,15 @@ byte pascal TestShotCollision(word handle)
 
 
 /** Test if sprite's bounding box is intersecting specified rectangle */
-bool pascal IsSpriteInRect(
-  word id, word x, word y, word left, word top, word right, word bottom)
+static bool pascal IsSpriteInRect(
+  Context* ctx,
+  word id,
+  word x,
+  word y,
+  word left,
+  word top,
+  word right,
+  word bottom)
 {
   register word height;
   register word width;
@@ -203,7 +257,7 @@ bool pascal IsSpriteInRect(
   register word rectWidth;
   word offset;
 
-  offset = gfxActorInfoData[id];
+  offset = ctx->gfxActorInfoData[id];
   x += AINFO_X_OFFSET(offset);
   y += AINFO_Y_OFFSET(offset);
   height = AINFO_HEIGHT(offset);
@@ -226,18 +280,24 @@ bool pascal IsSpriteInRect(
 
 
 /** Test if a player shot intersects the given rectangle, delete it if so */
-bool pascal FindPlayerShotInRect(word left, word top, word right, word bottom)
+bool pascal FindPlayerShotInRect(
+  Context* ctx,
+  word left,
+  word top,
+  word right,
+  word bottom)
 {
   PlayerShot* shot;
   word i;
 
   for (i = 0; i < MAX_NUM_PLAYER_SHOTS; i++)
   {
-    if (gmPlayerShotStates[i].active)
+    if (ctx->gmPlayerShotStates[i].active)
     {
-      shot = gmPlayerShotStates + i;
+      shot = ctx->gmPlayerShotStates + i;
 
-      if (IsSpriteInRect(shot->id, shot->x, shot->y, left, top, right, bottom))
+      if (IsSpriteInRect(
+            ctx, shot->id, shot->x, shot->y, left, top, right, bottom))
       {
         shot->active = 0; // delete the shot
         return true;
@@ -250,22 +310,21 @@ bool pascal FindPlayerShotInRect(word left, word top, word right, word bottom)
 
 
 /** Try unlocking a key card slot or key hole actor */
-void pascal TryUnlockingDoor(bool* pSuccess, word neededKeyId, word handle)
+void pascal
+  TryUnlockingDoor(Context* ctx, bool* pSuccess, word neededKeyId, word handle)
 {
-  ActorState* actor = gmActorStates + handle;
+  ActorState* actor = ctx->gmActorStates + handle;
 
   if (actor->var1) // door not unlocked yet?
   {
-    plBlockLookingUp = true;
+    ctx->plBlockLookingUp = true;
 
-    if (
-      (inputMoveUp || kbKeyState[SCANCODE_ENTER]) &&
-      RemoveFromInventory(neededKeyId))
+    if (ctx->inputMoveUp && RemoveFromInventory(ctx, neededKeyId))
     {
       *pSuccess = true;
 
       // Let the player show the "interact" animation
-      plInteractAnimTicks = 1;
+      ctx->plInteractAnimTicks = 1;
 
       // Mark lock as unlocked
       actor->var1 = false;
@@ -273,40 +332,24 @@ void pascal TryUnlockingDoor(bool* pSuccess, word neededKeyId, word handle)
   }
   else
   {
-    plBlockLookingUp = false;
+    ctx->plBlockLookingUp = false;
   }
 }
 
 
-/** Draw a collected letter indicator onto the HUD
- *
- * This would work for any type of sprite, but is only used for the letter
- * collection indicators.
- */
-void HUD_DrawLetterIndicator(word id)
-{
-  // This appears to draw the sprite at (0, 0), but it actually ends up drawn
-  // in the lower right part of the screen. The actual position is encoded in
-  // the sprite's x/y offset in the actor info data.
-  SetDrawPage(gfxCurrentDisplayPage);
-  DrawSprite(id, 0, 0, 0);
-
-  SetDrawPage(!gfxCurrentDisplayPage);
-  DrawSprite(id, 0, 0, 0);
-}
-
-
 /** Check if the player has collected all letters, but in the wrong order */
-void CheckLetterCollectionPityBonus(void)
+void CheckLetterCollectionPityBonus(Context* ctx)
 {
-  // [BUG] `plCollectedLetters != 5` is always true, if the first condition is
-  // true. The author most likely intended to compare only the low byte of
-  // plCollectedLetters to 5. But since this function isn't called when
+  // [BUG] `ctx->plCollectedLetters != 5` is always true, if the first condition
+  // is true. The author most likely intended to compare only the low byte of
+  // ctx->plCollectedLetters to 5. But since this function isn't called when
   // collecting all the letters in order, the bug doesn't materialize.
-  if ((plCollectedLetters >> 8 & 0x1F) == 0x1F && plCollectedLetters != 5)
+  if (
+    (ctx->plCollectedLetters >> 8 & 0x1F) == 0x1F &&
+    ctx->plCollectedLetters != 5)
   {
     ShowInGameMessage(
-      "OH, WELL... TEN THOUSAND POINTS IS*BETTER THAN NOTHING.");
+      ctx, "OH, WELL... TEN THOUSAND POINTS IS*BETTER THAN NOTHING.");
   }
 
   // [BUG] The 10k points are given for each letter that's collected, instead of
@@ -316,26 +359,27 @@ void CheckLetterCollectionPityBonus(void)
   // points.
   // My theory is that the if statement above didn't have curly braces in
   // the original code. Originally, the if statement body only contained the
-  // GiveScore() call. The message was then added later in development without
-  // adding curly braces to the if statement, leading to this bug.
-  GiveScore(10000);
+  // GiveScore(ctx, ) call. The message was then added later in development
+  // without adding curly braces to the if statement, leading to this bug.
+  GiveScore(ctx, 10000);
 }
 
 
 /** Convenience helper function */
-bool pascal Boss3_IsTouchingPlayer(word handle)
+bool pascal Boss3_IsTouchingPlayer(Context* ctx, word handle)
 {
-  ActorState* actor = gmActorStates + handle;
+  ActorState* actor = ctx->gmActorStates + handle;
 
   return AreSpritesTouching(
+    ctx,
     actor->id,
     actor->frame,
     actor->x,
     actor->y,
-    plActorId,
-    plAnimationFrame,
-    plPosX,
-    plPosY);
+    ctx->plActorId,
+    ctx->plAnimationFrame,
+    ctx->plPosX,
+    ctx->plPosY);
 }
 
 
@@ -351,17 +395,29 @@ bool pascal Boss3_IsTouchingPlayer(word handle)
  * been extended to feature a "damages player" flag that actors could set on
  * themselves, which would then be handled in UpdateAndDrawActors().
  */
-void pascal UpdateActorPlayerCollision(word handle)
+void pascal UpdateActorPlayerCollision(Context* ctx, word handle)
 {
-  ActorState* state = gmActorStates + handle;
-  int i;
+  ActorState* state = ctx->gmActorStates + handle;
 
-  if (plState == PS_DYING) { return; }
-  if (plState == PS_GETTING_EATEN) { return; }
+  if (ctx->plState == PS_DYING)
+  {
+    return;
+  }
+  if (ctx->plState == PS_GETTING_EATEN)
+  {
+    return;
+  }
 
   if (AreSpritesTouching(
-    state->id, state->frame, state->x, state->y,
-    plActorId, plAnimationFrame, plPosX, plPosY))
+        ctx,
+        state->id,
+        state->frame,
+        state->x,
+        state->y,
+        ctx->plActorId,
+        ctx->plAnimationFrame,
+        ctx->plPosX,
+        ctx->plPosY))
   {
     switch (state->id)
     {
@@ -369,12 +425,12 @@ void pascal UpdateActorPlayerCollision(word handle)
         // Only damage the player if currently grabbing
         if (state->var1 == true)
         {
-          DamagePlayer();
+          DamagePlayer(ctx);
         }
         break;
 
       case ACT_SUPER_FORCE_FIELD_L:
-        if (plCloakTimeLeft)
+        if (ctx->plCloakTimeLeft)
         {
           // Player is cloaked, initiate the destruction sequence
           if (!state->var3)
@@ -392,20 +448,18 @@ void pascal UpdateActorPlayerCollision(word handle)
         }
 
         // Prevent the player from passing through
-        if (plPosX + 2 <= state->x)
+        if (ctx->plPosX + 2 <= state->x)
         {
-          plPosX--;
+          ctx->plPosX--;
         }
 
-        if (plPosX + 2 > state->x)
+        if (ctx->plPosX + 2 > state->x)
         {
-          plPosX++;
+          ctx->plPosX++;
         }
 
-        DamagePlayer();
-        ShowTutorial(
-          TUT_CLOAK_NEEDED,
-          "OUCH, YOU NEED TO FIND THE CLOAKING*DEVICE TO DISABLE THIS FORCEFIELD.");
+        DamagePlayer(ctx);
+        ShowTutorial(ctx, TUT_CLOAK_NEEDED);
         break;
 
       case ACT_RESPAWN_CHECKPOINT:
@@ -416,46 +470,46 @@ void pascal UpdateActorPlayerCollision(word handle)
         break;
 
       case ACT_CIRCUIT_CARD_KEYHOLE:
-        if (plPosY - 2 == state->y)
+        if (ctx->plPosY - 2 == state->y)
         {
-          TryUnlockingDoor(&gmRequestUnlockNextForceField, ACT_CIRCUIT_CARD, handle);
-          ShowTutorial(
-            TUT_FOUND_FORCE_FIELD,
-            "USE THE ACCESS CARD TO DISABLE*THIS FORCE FIELD.");
+          TryUnlockingDoor(
+            ctx, &ctx->gmRequestUnlockNextForceField, ACT_CIRCUIT_CARD, handle);
+          ShowTutorial(ctx, TUT_FOUND_FORCE_FIELD);
 
-          if (inputMoveUp || kbKeyState[SCANCODE_ENTER])
+          if (ctx->inputMoveUp)
           {
             if (state->var1)
             {
-              ShowTutorial(TUT_CARD_NEEDED, "ACCESS DENIED.");
-              plBlockLookingUp = false;
+              ShowTutorial(ctx, TUT_CARD_NEEDED);
+              ctx->plBlockLookingUp = false;
             }
-            else if (gmRequestUnlockNextForceField)
+            else if (ctx->gmRequestUnlockNextForceField)
             {
-              gmTutorialsShown[TUT_CARD_NEEDED] = true;
-              ShowInGameMessage("ACCESS GRANTED.");
+              /*ctx->gmTutorialsShown[TUT_CARD_NEEDED] = true;*/
+              ShowInGameMessage(ctx, "ACCESS GRANTED.");
             }
           }
         }
         break;
 
       case ACT_BLUE_KEY_KEYHOLE:
-        if (plPosY - 2 == state->y)
+        if (ctx->plPosY - 2 == state->y)
         {
-          ShowTutorial(TUT_FOUND_KEYHOLE, "USE A KEY TO OPEN THIS DOOR.");
-          TryUnlockingDoor(&gmRequestUnlockNextDoor, ACT_BLUE_KEY, handle);
+          ShowTutorial(ctx, TUT_FOUND_KEYHOLE);
+          TryUnlockingDoor(
+            ctx, &ctx->gmRequestUnlockNextDoor, ACT_BLUE_KEY, handle);
 
-          if (inputMoveUp || kbKeyState[SCANCODE_ENTER])
+          if (ctx->inputMoveUp)
           {
             if (state->var1)
             {
-              ShowTutorial(TUT_KEY_NEEDED, "YOU NEED A KEY TO OPEN*THE DOOR.");
-              plBlockLookingUp = false;
+              ShowTutorial(ctx, TUT_KEY_NEEDED);
+              ctx->plBlockLookingUp = false;
             }
-            else if (gmRequestUnlockNextDoor)
+            else if (ctx->gmRequestUnlockNextDoor)
             {
-              ShowInGameMessage("OPENING DOOR.");
-              gmTutorialsShown[TUT_KEY_NEEDED] = true;
+              ShowInGameMessage(ctx, "OPENING DOOR.");
+              /*ctx->gmTutorialsShown[TUT_KEY_NEEDED] = true;*/
             }
           }
         }
@@ -464,21 +518,19 @@ void pascal UpdateActorPlayerCollision(word handle)
       case ACT_DUKES_SHIP_R:
       case ACT_DUKES_SHIP_L:
         if (
-          plState == PS_FALLING &&
+          ctx->plState == PS_FALLING &&
           state->var1 == 0 && // ship pickup cooldown has elapsed
           state->gravityState == 0) // ship is on solid ground
         {
-          ShowTutorial(
-            TUT_SHIP,
-            "THE SHIP. USE THIS TO GET OUT OF THIS*LEVEL.  YOU CAN FLY ANYWHERE, AND*YOUR WEAPON IS VERY POWERFUL.");
+          ShowTutorial(ctx, TUT_SHIP);
 
-          plState = PS_USING_SHIP;
-          plActorId = state->id;
-          plAnimationFrame = 1;
-          plPosY = state->y;
-          plPosX = state->x;
+          ctx->plState = PS_USING_SHIP;
+          ctx->plActorId = state->id;
+          ctx->plAnimationFrame = 1;
+          ctx->plPosY = state->y;
+          ctx->plPosX = state->x;
 
-          PlaySound(SND_WEAPON_PICKUP);
+          PlaySound(ctx, SND_WEAPON_PICKUP);
 
           // Delete the pickup. Exiting the ship will respawn it.
           state->deleted = true;
@@ -487,14 +539,12 @@ void pascal UpdateActorPlayerCollision(word handle)
 
       case ACT_CEILING_SUCKER:
         if (
-          plState != PS_USING_SHIP &&
-          state->frame == 5 &&
-          state->var1 < 10 &&
-          plPosX + 1 >= state->x &&
-          state->x + 1 >= plPosX)
+          ctx->plState != PS_USING_SHIP && state->frame == 5 &&
+          state->var1 < 10 && ctx->plPosX + 1 >= state->x &&
+          state->x + 1 >= ctx->plPosX)
         {
-          gmPlayerEatingActor = state->id;
-          plState = PS_GETTING_EATEN;
+          ctx->gmPlayerEatingActor = state->id;
+          ctx->plState = PS_GETTING_EATEN;
           state->var2 = 1;
         }
         break;
@@ -529,10 +579,10 @@ void pascal UpdateActorPlayerCollision(word handle)
       case ACT_SMALL_FLYING_SHIP_1:
       case ACT_SMALL_FLYING_SHIP_2:
       case ACT_SMALL_FLYING_SHIP_3:
-        DamagePlayer();
+        DamagePlayer(ctx);
         // [BUG] Unintended fallthrough. No observable consequences, because
         // the player has invincibility frames after taking damage and so the
-        // potential 2nd call to DamagePlayer() will have no effect.
+        // potential 2nd call to DamagePlayer(ctx) will have no effect.
 
       case ACT_BOSS_EPISODE_2:
       case ACT_BOSS_EPISODE_1:
@@ -540,43 +590,46 @@ void pascal UpdateActorPlayerCollision(word handle)
       case ACT_BOSS_EPISODE_4:
         if (state->var3 < 2)
         {
-          DamagePlayer();
+          DamagePlayer(ctx);
         }
         break;
 
       case ACT_BOSS_EPISODE_4_SHOT:
-        DamagePlayer();
-        SpawnEffect(ACT_EXPLOSION_FX_1, state->x, state->y, EM_NONE, 0);
+        DamagePlayer(ctx);
+        SpawnEffect(ctx, ACT_EXPLOSION_FX_1, state->x, state->y, EM_NONE, 0);
         state->deleted = true;
         break;
 
       case ACT_SPIDER:
-        DamagePlayer();
+        DamagePlayer(ctx);
 
-        if (plCloakTimeLeft) { break; }
+        if (ctx->plCloakTimeLeft)
+        {
+          break;
+        }
 
         if (
-          (plAttachedSpider1 == 0 && state->gravityState != 0) ||
-          ((plAttachedSpider2 == 0 || plAttachedSpider3 == 0) &&
-          state->scoreGiven != 0 && // score field is repurposed as state
-                                    // variable, indicating if the spider
-                                    // is on the ground
-          state->frame < 12))
+          (ctx->plAttachedSpider1 == 0 && state->gravityState != 0) ||
+          ((ctx->plAttachedSpider2 == 0 || ctx->plAttachedSpider3 == 0) &&
+           state->scoreGiven != 0 && // score field is repurposed as state
+                                     // variable, indicating if the spider
+                                     // is on the ground
+           state->frame < 12))
         {
           if (!state->gravityState) // on ground
           {
-            if (plAttachedSpider2)
+            if (ctx->plAttachedSpider2)
             {
-              plAttachedSpider3 = handle;
+              ctx->plAttachedSpider3 = handle;
             }
             else
             {
-              plAttachedSpider2 = handle;
+              ctx->plAttachedSpider2 = handle;
             }
           }
-          else if (plAttachedSpider1 == 0)
+          else if (ctx->plAttachedSpider1 == 0)
           {
-            plAttachedSpider1 = handle;
+            ctx->plAttachedSpider1 = handle;
           }
 
           state->health = 0; // make invincible
@@ -590,15 +643,15 @@ void pascal UpdateActorPlayerCollision(word handle)
         // Only damage player while smashing down
         if (state->var3 == 1)
         {
-          DamagePlayer();
+          DamagePlayer(ctx);
         }
         break;
 
       case ACT_EYEBALL_THROWER_L:
       case ACT_EYEBALL_THROWER_R:
-        if (state->y - 5 < plPosY)
+        if (state->y - 5 < ctx->plPosY)
         {
-          DamagePlayer();
+          DamagePlayer(ctx);
         }
         break;
 
@@ -606,25 +659,25 @@ void pascal UpdateActorPlayerCollision(word handle)
         // Only damage player if not currently spinning
         if (!state->var1)
         {
-          DamagePlayer();
+          DamagePlayer(ctx);
         }
         break;
 
       case ACT_ENEMY_LASER_SHOT_L:
         state->deleted = true;
-        DamagePlayer();
+        DamagePlayer(ctx);
         break;
 
       case ACT_SNAKE:
         if (
           // snake not currently eating player?
-          !state->var2 &&
-          plState == PS_NORMAL)
+          !state->var2 && ctx->plState == PS_NORMAL)
         {
           if (state->var1) // snake facing right and player in reach? or...
           {
-            if ((state->x + 3 == plPosX || state->x + 2 == plPosX) &&
-             state->y == plPosY)
+            if (
+              (state->x + 3 == ctx->plPosX || state->x + 2 == ctx->plPosX) &&
+              state->y == ctx->plPosY)
             {
               // Start eating the player (see Act_Snake)
               state->var2 = 1;
@@ -632,8 +685,9 @@ void pascal UpdateActorPlayerCollision(word handle)
           }
           else // ... snake facing left and player in reach?
           {
-            if ((state->x - 3 == plPosX || state->x - 2 == plPosX) &&
-             state->y == plPosY)
+            if (
+              (state->x - 3 == ctx->plPosX || state->x - 2 == ctx->plPosX) &&
+              state->y == ctx->plPosY)
             {
               // Start eating the player (see Act_Snake)
               state->var2 = 1;
@@ -647,17 +701,17 @@ void pascal UpdateActorPlayerCollision(word handle)
       case ACT_ENEMY_ROCKET_RIGHT:
       case ACT_ENEMY_ROCKET_2_UP:
       case ACT_ENEMY_ROCKET_2_DOWN:
-        DamagePlayer();
-        SpawnEffect(ACT_EXPLOSION_FX_1, state->x, state->y, EM_NONE, 0);
+        DamagePlayer(ctx);
+        SpawnEffect(ctx, ACT_EXPLOSION_FX_1, state->x, state->y, EM_NONE, 0);
         state->deleted = true;
         break;
 
       case ACT_ELECTRIC_REACTOR:
         // Insta-kill the player
-        plHealth = 1;
-        plMercyFramesLeft = 0;
-        plCloakTimeLeft = 0;
-        DamagePlayer();
+        ctx->plHealth = 1;
+        ctx->plMercyFramesLeft = 0;
+        ctx->plCloakTimeLeft = 0;
+        DamagePlayer(ctx);
 
         // [BUG] The cloak doesn't reappear if the player dies while cloaked
         // and then respawns at a checkpoint, potentially making the level
@@ -674,103 +728,129 @@ void pascal UpdateActorPlayerCollision(word handle)
           switch (state->id)
           {
             case ACT_NORMAL_WEAPON:
-              ShowTutorial(TUT_WPN_REGULAR, "THIS IS YOUR REGULAR WEAPON!");
+              ShowTutorial(ctx, TUT_WPN_REGULAR);
               break;
 
             case ACT_LASER:
-              ShowTutorial(
-                TUT_WPN_LASER, "THIS WEAPON CAN SHOOT*THROUGH ANYTHING!");
+              ShowTutorial(ctx, TUT_WPN_LASER);
               break;
 
             case ACT_FLAME_THROWER:
-              ShowTutorial(
-                TUT_WPN_FLAMETHROWER,
-                "THERE ARE MANY SECRETS WITH*THIS WEAPON. USE IT TO*YOUR ADVANTAGE!");
+              ShowTutorial(ctx, TUT_WPN_FLAMETHROWER);
+
               break;
 
             case ACT_ROCKET_LAUNCHER:
-              ShowTutorial(
-                TUT_WPN_ROCKETLAUNCHER,
-                "A ROCKET LAUNCHER IS VERY*DEADLY. IT IS THE STRONGEST OF*ANY WEAPON!");
+              ShowTutorial(ctx, TUT_WPN_ROCKETLAUNCHER);
               break;
           }
 
           if (state->id != ACT_FLAME_THROWER)
           {
-            plAmmo = MAX_AMMO;
+            ctx->plAmmo = MAX_AMMO;
           }
           else
           {
-            plAmmo = MAX_AMMO_FLAMETHROWER;
+            ctx->plAmmo = MAX_AMMO_FLAMETHROWER;
           }
 
-          gmWeaponsCollected++;
+          ctx->gmWeaponsCollected++;
 
-          plWeapon = state->var3;
+          ctx->plWeapon = state->var3;
 
-          HUD_DrawAmmo(plAmmo);
-          HUD_DrawWeapon(plWeapon);
+          // HUD_DrawAmmo(ctx->plAmmo);
+          // HUD_DrawWeapon(ctx->plWeapon);
 
-          PlaySound(SND_WEAPON_PICKUP);
+          PlaySound(ctx, SND_WEAPON_PICKUP);
 
           state->deleted = true;
           SpawnEffect(
-            ACT_SCORE_NUMBER_FX_2000, state->x, state->y, EM_SCORE_NUMBER, 0);
-          GiveScore(2000);
+            ctx,
+            ACT_SCORE_NUMBER_FX_2000,
+            state->x,
+            state->y,
+            EM_SCORE_NUMBER,
+            0);
+          GiveScore(ctx, 2000);
         }
         break;
 
       case ACT_SUNGLASSES:
-        PlaySound(SND_ITEM_PICKUP);
-        GiveScore(100);
+        PlaySound(ctx, SND_ITEM_PICKUP);
+        GiveScore(ctx, 100);
         state->deleted = true;
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
-        gmMerchCollected++;
+          ctx, ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
+        ctx->gmMerchCollected++;
         break;
 
       case ACT_CAMERA:
-        PlaySound(SND_ITEM_PICKUP);
-        GiveScore(2500);
+        PlaySound(ctx, SND_ITEM_PICKUP);
+        GiveScore(ctx, 2500);
         state->deleted = true;
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_2000, state->x, state->y - 1, EM_SCORE_NUMBER, 0);
+          ctx,
+          ACT_SCORE_NUMBER_FX_2000,
+          state->x,
+          state->y - 1,
+          EM_SCORE_NUMBER,
+          0);
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_500, state->x, state->y, EM_SCORE_NUMBER, 0);
-        gmMerchCollected++;
+          ctx, ACT_SCORE_NUMBER_FX_500, state->x, state->y, EM_SCORE_NUMBER, 0);
+        ctx->gmMerchCollected++;
         break;
 
       case ACT_PHONE:
-        PlaySound(SND_ITEM_PICKUP);
-        GiveScore(2000);
+        PlaySound(ctx, SND_ITEM_PICKUP);
+        GiveScore(ctx, 2000);
         state->deleted = true;
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_2000, state->x, state->y, EM_SCORE_NUMBER, 0);
-        gmMerchCollected++;
+          ctx,
+          ACT_SCORE_NUMBER_FX_2000,
+          state->x,
+          state->y,
+          EM_SCORE_NUMBER,
+          0);
+        ctx->gmMerchCollected++;
         break;
 
       case ACT_TV:
-        PlaySound(SND_ITEM_PICKUP);
-        GiveScore(1500);
+        PlaySound(ctx, SND_ITEM_PICKUP);
+        GiveScore(ctx, 1500);
         state->deleted = true;
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_500, state->x, state->y, EM_SCORE_NUMBER, 0);
+          ctx, ACT_SCORE_NUMBER_FX_500, state->x, state->y, EM_SCORE_NUMBER, 0);
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_500, state->x, state->y - 1, EM_SCORE_NUMBER, 0);
+          ctx,
+          ACT_SCORE_NUMBER_FX_500,
+          state->x,
+          state->y - 1,
+          EM_SCORE_NUMBER,
+          0);
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_500, state->x, state->y - 2, EM_SCORE_NUMBER, 0);
-        gmMerchCollected++;
+          ctx,
+          ACT_SCORE_NUMBER_FX_500,
+          state->x,
+          state->y - 2,
+          EM_SCORE_NUMBER,
+          0);
+        ctx->gmMerchCollected++;
         break;
 
       case ACT_BOOM_BOX:
-        PlaySound(SND_ITEM_PICKUP);
-        GiveScore(1000);
+        PlaySound(ctx, SND_ITEM_PICKUP);
+        GiveScore(ctx, 1000);
         state->deleted = true;
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_500, state->x, state->y, EM_SCORE_NUMBER, 0);
+          ctx, ACT_SCORE_NUMBER_FX_500, state->x, state->y, EM_SCORE_NUMBER, 0);
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_500, state->x, state->y - 1, EM_SCORE_NUMBER, 0);
-        gmMerchCollected++;
+          ctx,
+          ACT_SCORE_NUMBER_FX_500,
+          state->x,
+          state->y - 1,
+          EM_SCORE_NUMBER,
+          0);
+        ctx->gmMerchCollected++;
         break;
 
       case ACT_GAME_CARTRIDGE:
@@ -779,12 +859,13 @@ void pascal UpdateActorPlayerCollision(word handle)
       case ACT_CD:
       case ACT_T_SHIRT:
       case ACT_VIDEOCASSETTE:
-        PlaySound(SND_ITEM_PICKUP);
+        PlaySound(ctx, SND_ITEM_PICKUP);
 
         if (state->id == ACT_T_SHIRT)
         {
-          GiveScore(5000);
+          GiveScore(ctx, 5000);
           SpawnEffect(
+            ctx,
             ACT_SCORE_NUMBER_FX_5000,
             state->x,
             state->y - 2,
@@ -793,37 +874,42 @@ void pascal UpdateActorPlayerCollision(word handle)
         }
         else
         {
-          GiveScore(500);
+          GiveScore(ctx, 500);
           SpawnEffect(
-            ACT_SCORE_NUMBER_FX_500, state->x, state->y, EM_SCORE_NUMBER, 0);
+            ctx,
+            ACT_SCORE_NUMBER_FX_500,
+            state->x,
+            state->y,
+            EM_SCORE_NUMBER,
+            0);
         }
 
-        gmMerchCollected++;
+        ctx->gmMerchCollected++;
 
         state->deleted = true;
         break;
 
       case ACT_TURKEY:
-        PlaySound(SND_HEALTH_PICKUP);
+        PlaySound(ctx, SND_HEALTH_PICKUP);
 
-        plHealth++;
+        ctx->plHealth++;
 
         if (state->var2 == 2) // cooked turkey?
         {
-          plHealth++;
+          ctx->plHealth++;
         }
 
-        if (plHealth > PLAYER_MAX_HEALTH)
+        if (ctx->plHealth > PLAYER_MAX_HEALTH)
         {
-          plHealth = PLAYER_MAX_HEALTH;
+          ctx->plHealth = PLAYER_MAX_HEALTH;
         }
 
-        HUD_DrawHealth(plHealth);
+        // HUD_DrawHealth(ctx->plHealth);
 
         // [BUG] The turkey doesn't give any points, but spawns a score number
         // on pickup
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
+          ctx, ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
 
         state->deleted = true;
         break;
@@ -833,48 +919,53 @@ void pascal UpdateActorPlayerCollision(word handle)
 
         if (state->var3) // soda can rocket
         {
-          GiveScore(2000);
-          PlaySound(SND_ITEM_PICKUP);
+          GiveScore(ctx, 2000);
+          PlaySound(ctx, SND_ITEM_PICKUP);
           SpawnEffect(
-            ACT_SCORE_NUMBER_FX_2000, state->x, state->y, EM_SCORE_NUMBER, 0);
+            ctx,
+            ACT_SCORE_NUMBER_FX_2000,
+            state->x,
+            state->y,
+            EM_SCORE_NUMBER,
+            0);
         }
         else
         {
-          ShowTutorial(
-            TUT_SODA, "THE CAFFEINE IN SODAS PROVIDES*ONE UNIT OF HEALTH.");
-          GiveScore(100);
-          PlaySound(SND_HEALTH_PICKUP);
+          ShowTutorial(ctx, TUT_SODA);
+          GiveScore(ctx, 100);
+          PlaySound(ctx, SND_HEALTH_PICKUP);
 
-          plHealth++;
+          ctx->plHealth++;
 
-          if (plHealth > PLAYER_MAX_HEALTH)
+          if (ctx->plHealth > PLAYER_MAX_HEALTH)
           {
-            plHealth = PLAYER_MAX_HEALTH;
+            ctx->plHealth = PLAYER_MAX_HEALTH;
           }
 
-          HUD_DrawHealth(plHealth);
-
           SpawnEffect(
-            ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
+            ctx,
+            ACT_SCORE_NUMBER_FX_100,
+            state->x,
+            state->y,
+            EM_SCORE_NUMBER,
+            0);
         }
         break;
 
       case ACT_SODA_6_PACK:
-        PlaySound(SND_HEALTH_PICKUP);
+        PlaySound(ctx, SND_HEALTH_PICKUP);
         state->deleted = true;
-        GiveScore(100);
+        GiveScore(ctx, 100);
 
-        plHealth += 6;
+        ctx->plHealth += 6;
 
-        if (plHealth > PLAYER_MAX_HEALTH)
+        if (ctx->plHealth > PLAYER_MAX_HEALTH)
         {
-          plHealth = PLAYER_MAX_HEALTH;
+          ctx->plHealth = PLAYER_MAX_HEALTH;
         }
 
-        HUD_DrawHealth(plHealth);
-
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
+          ctx, ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
         break;
 
       case ACT_HEALTH_MOLECULE:
@@ -882,28 +973,37 @@ void pascal UpdateActorPlayerCollision(word handle)
         // of the fly-up sequence after shooting the containing box
         if (state->var1 > 8)
         {
-          ShowTutorial(
-            TUT_HEALTH_MOLECULE, "THIS ITEM WILL GIVE YOU ONE UNIT*OF HEALTH.");
-          PlaySound(SND_HEALTH_PICKUP);
+          ShowTutorial(ctx, TUT_HEALTH_MOLECULE);
+          PlaySound(ctx, SND_HEALTH_PICKUP);
 
-          plHealth++;
+          ctx->plHealth++;
 
-          if (plHealth > PLAYER_MAX_HEALTH)
+          if (ctx->plHealth > PLAYER_MAX_HEALTH)
           {
-            plHealth = PLAYER_MAX_HEALTH;
+            ctx->plHealth = PLAYER_MAX_HEALTH;
 
-            GiveScore(10000);
+            GiveScore(ctx, 10000);
             SpawnEffect(
-              ACT_SCORE_NUMBER_FX_10000, state->x, state->y, EM_SCORE_NUMBER, 0);
+              ctx,
+              ACT_SCORE_NUMBER_FX_10000,
+              state->x,
+              state->y,
+              EM_SCORE_NUMBER,
+              0);
           }
           else
           {
             SpawnEffect(
-              ACT_SCORE_NUMBER_FX_500, state->x, state->y, EM_SCORE_NUMBER, 0);
+              ctx,
+              ACT_SCORE_NUMBER_FX_500,
+              state->x,
+              state->y,
+              EM_SCORE_NUMBER,
+              0);
 
-            HUD_DrawHealth(plHealth);
+            // HUD_DrawHealth(ctx->plHealth);
 
-            GiveScore(500);
+            GiveScore(ctx, 500);
           }
 
           state->deleted = true;
@@ -911,125 +1011,114 @@ void pascal UpdateActorPlayerCollision(word handle)
         break;
 
       case ACT_N:
-        HUD_DrawLetterIndicator(ACT_LETTER_INDICATOR_N);
-
-        // The letter collection state is stored in plCollectedLetters. The
+        // The letter collection state is stored in ctx->plCollectedLetters. The
         // low byte of that value is the number of letters that have been
         // collected in the right order, while the high byte is a bitmask which
         // has one bit set for each letter that has been collected (regardless
         // of order).
-        if (plCollectedLetters == 0)
+        if (ctx->plCollectedLetters == 0)
         {
-          plCollectedLetters++;
+          ctx->plCollectedLetters++;
 
-          ShowTutorial(TUT_N, "GOT THE N.  WHAT IS NEXT?");
+          ShowTutorial(ctx, TUT_N);
         }
 
-        plCollectedLetters |= 0x100;
+        ctx->plCollectedLetters |= 0x100;
 
-        CheckLetterCollectionPityBonus();
+        CheckLetterCollectionPityBonus(ctx);
 
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
-        GiveScore(100);
+          ctx, ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
+        GiveScore(ctx, 100);
 
-        PlaySound(SND_ITEM_PICKUP);
+        PlaySound(ctx, SND_ITEM_PICKUP);
 
         state->deleted = true;
         break;
 
       case ACT_U:
-        HUD_DrawLetterIndicator(ACT_LETTER_INDICATOR_U);
-
         // See ACT_N above
-        if ((plCollectedLetters & 7) == 1)
+        if ((ctx->plCollectedLetters & 7) == 1)
         {
-          plCollectedLetters++;
+          ctx->plCollectedLetters++;
 
-          ShowTutorial(TUT_U, "GOT THE U.");
+          ShowTutorial(ctx, TUT_U);
         }
 
-        plCollectedLetters |= 0x200;
+        ctx->plCollectedLetters |= 0x200;
 
-        CheckLetterCollectionPityBonus();
+        CheckLetterCollectionPityBonus(ctx);
 
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
-        GiveScore(100);
+          ctx, ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
+        GiveScore(ctx, 100);
 
-        PlaySound(SND_ITEM_PICKUP);
+        PlaySound(ctx, SND_ITEM_PICKUP);
 
         state->deleted = true;
         break;
 
       case ACT_K:
-        HUD_DrawLetterIndicator(ACT_LETTER_INDICATOR_K);
-
         // See ACT_N above
-        if ((plCollectedLetters & 7) == 2)
+        if ((ctx->plCollectedLetters & 7) == 2)
         {
-          plCollectedLetters++;
+          ctx->plCollectedLetters++;
 
-          ShowTutorial(TUT_K, "GOT THE K.");
+          ShowTutorial(ctx, TUT_K);
         }
 
-        plCollectedLetters |= 0x400;
+        ctx->plCollectedLetters |= 0x400;
 
-        CheckLetterCollectionPityBonus();
+        CheckLetterCollectionPityBonus(ctx);
 
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
-        GiveScore(100);
+          ctx, ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
+        GiveScore(ctx, 100);
 
-        PlaySound(SND_ITEM_PICKUP);
+        PlaySound(ctx, SND_ITEM_PICKUP);
 
         state->deleted = true;
         break;
 
       case ACT_E:
-        HUD_DrawLetterIndicator(ACT_LETTER_INDICATOR_E);
-
         // See ACT_N above
-        if ((plCollectedLetters & 7) == 3)
+        if ((ctx->plCollectedLetters & 7) == 3)
         {
-          plCollectedLetters++;
+          ctx->plCollectedLetters++;
 
-          ShowTutorial(TUT_E, "GOT THE E.");
+          ShowTutorial(ctx, TUT_E);
         }
 
-        plCollectedLetters |= 0x800;
+        ctx->plCollectedLetters |= 0x800;
 
-        CheckLetterCollectionPityBonus();
+        CheckLetterCollectionPityBonus(ctx);
 
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
-        GiveScore(100);
+          ctx, ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
+        GiveScore(ctx, 100);
 
-        PlaySound(SND_ITEM_PICKUP);
+        PlaySound(ctx, SND_ITEM_PICKUP);
 
         state->deleted = true;
         break;
 
       case ACT_M:
-        plCollectedLetters |= 0x1000;
-
-        HUD_DrawLetterIndicator(ACT_LETTER_INDICATOR_M);
+        ctx->plCollectedLetters |= 0x1000;
 
         // See ACT_N above
-        if ((plCollectedLetters & 7) == 4)
+        if ((ctx->plCollectedLetters & 7) == 4)
         {
           byte i;
 
-          sbyte SCORE_NUMBER_OFFSETS[] = { -3, 0, 3, 0 };
+          sbyte SCORE_NUMBER_OFFSETS[] = {-3, 0, 3, 0};
 
-          PlaySound(SND_LETTERS_COLLECTED_CORRECTLY);
-          ShowTutorial(
-            TUT_LETTERS_COLLECTED,
-            "EXCELLENT!  ONE HUNDRED THOUSAND*POINTS!!!!!!!!!!!");
+          PlaySound(ctx, SND_LETTERS_COLLECTED_CORRECTLY);
+          ShowTutorial(ctx, TUT_LETTERS_COLLECTED);
 
           for (i = 0; i < 10; i++)
           {
             SpawnEffect(
+              ctx,
               ACT_SCORE_NUMBER_FX_10000,
               state->x + SCORE_NUMBER_OFFSETS[i & 3],
               state->y - i,
@@ -1038,18 +1127,23 @@ void pascal UpdateActorPlayerCollision(word handle)
           }
 
           // GiveScore takes a 16-bit word, so we can't add 100000 in one go
-          GiveScore(50000);
-          GiveScore(50000);
+          GiveScore(ctx, 50000);
+          GiveScore(ctx, 50000);
         }
         else
         {
-          CheckLetterCollectionPityBonus();
+          CheckLetterCollectionPityBonus(ctx);
 
           SpawnEffect(
-            ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
-          GiveScore(100);
+            ctx,
+            ACT_SCORE_NUMBER_FX_100,
+            state->x,
+            state->y,
+            EM_SCORE_NUMBER,
+            0);
+          GiveScore(ctx, 100);
 
-          PlaySound(SND_ITEM_PICKUP);
+          PlaySound(ctx, SND_ITEM_PICKUP);
         }
 
         state->deleted = true;
@@ -1060,38 +1154,47 @@ void pascal UpdateActorPlayerCollision(word handle)
       case ACT_CIRCUIT_CARD:
         // Only allow picking up the item if it has completed the upwards part
         // of the fly-up sequence after shooting the containing box
-        if (state->var1 <= 8) { break; }
+        if (state->var1 <= 8)
+        {
+          break;
+        }
 
-        PlaySound(SND_ITEM_PICKUP);
+        PlaySound(ctx, SND_ITEM_PICKUP);
 
         if (state->id == ACT_CLOAKING_DEVICE)
         {
           ShowInGameMessage(
+            ctx,
             "YOU ARE NOW INVINCIBLE FOR A SHORT*PERIOD OF TIME...**USE THIS TO ALSO DISABLE*THE FORCE FIELD...");
-          RemoveFromInventory(ACT_CLOAKING_DEVICE_ICON);
-          AddInventoryItem(ACT_CLOAKING_DEVICE_ICON);
-          plCloakTimeLeft = CLOAK_TIME;
-          gmCloakPickupPosX = state->x;
-          gmCloakPickupPosY = state->y;
+          RemoveFromInventory(ctx, ACT_CLOAKING_DEVICE_ICON);
+          AddInventoryItem(ctx, ACT_CLOAKING_DEVICE_ICON);
+          ctx->plCloakTimeLeft = CLOAK_TIME;
+          ctx->gmCloakPickupPosX = state->x;
+          ctx->gmCloakPickupPosY = state->y;
 
-          GiveScore(500);
+          GiveScore(ctx, 500);
           state->deleted = true;
         }
         else
         {
           if (state->id == ACT_BLUE_KEY)
           {
-            ShowTutorial(TUT_KEY, "FIND THE DOOR THAT*THIS KEY OPENS.");
+            ShowTutorial(ctx, TUT_KEY);
           }
           else
           {
-            ShowTutorial(TUT_CARD, "USE THE CARD TO TURN OFF*FORCE FIELDS.");
+            ShowTutorial(ctx, TUT_CARD);
           }
 
           SpawnEffect(
-            ACT_SCORE_NUMBER_FX_500, state->x, state->y, EM_SCORE_NUMBER, 0);
-          AddInventoryItem(state->id);
-          GiveScore(500);
+            ctx,
+            ACT_SCORE_NUMBER_FX_500,
+            state->x,
+            state->y,
+            EM_SCORE_NUMBER,
+            0);
+          AddInventoryItem(ctx, state->id);
+          GiveScore(ctx, 500);
 
           state->deleted = true;
         }
@@ -1102,20 +1205,24 @@ void pascal UpdateActorPlayerCollision(word handle)
         // of the fly-up sequence after shooting the containing box
         if (state->var1 > 8)
         {
-          PlaySound(SND_WEAPON_PICKUP);
+          PlaySound(ctx, SND_WEAPON_PICKUP);
 
-          RemoveFromInventory(ACT_RAPID_FIRE_ICON);
+          RemoveFromInventory(ctx, ACT_RAPID_FIRE_ICON);
 
-          ShowTutorial(
-            TUT_RAPID_FIRE, "HOLD DOWN YOUR FIRE BUTTON FOR*RAPID FIRE.");
+          ShowTutorial(ctx, TUT_RAPID_FIRE);
 
-          AddInventoryItem(ACT_RAPID_FIRE_ICON);
+          AddInventoryItem(ctx, ACT_RAPID_FIRE_ICON);
 
           SpawnEffect(
-            ACT_SCORE_NUMBER_FX_500, state->x, state->y, EM_SCORE_NUMBER, 0);
-          GiveScore(500);
+            ctx,
+            ACT_SCORE_NUMBER_FX_500,
+            state->x,
+            state->y,
+            EM_SCORE_NUMBER,
+            0);
+          GiveScore(ctx, 500);
 
-          plRapidFireTimeLeft = RAPID_FIRE_TIME;
+          ctx->plRapidFireTimeLeft = RAPID_FIRE_TIME;
           state->deleted = true;
         }
         break;
@@ -1123,18 +1230,22 @@ void pascal UpdateActorPlayerCollision(word handle)
       case ACT_SPECIAL_HINT_MACHINE:
         // If the globe has already been placed onto the hint machine, do
         // nothing
-        if (state->var1) { break; }
+        if (state->var1)
+        {
+          break;
+        }
 
-        if (RemoveFromInventory(ACT_SPECIAL_HINT_GLOBE_ICON))
+        if (RemoveFromInventory(ctx, ACT_SPECIAL_HINT_GLOBE_ICON))
         {
           byte i;
 
-          GiveScore(50000);
-          PlaySound(SND_ITEM_PICKUP);
+          GiveScore(ctx, 50000);
+          PlaySound(ctx, SND_ITEM_PICKUP);
 
           for (i = 0; i < 5; i++)
           {
             SpawnEffect(
+              ctx,
               ACT_SCORE_NUMBER_FX_10000,
               state->x,
               state->y - i,
@@ -1145,39 +1256,40 @@ void pascal UpdateActorPlayerCollision(word handle)
           // Mark the machine as having the globe placed
           state->var1 = true;
 
-          // The scripting system also handles showing the hint machine
-          // messages
-          ShowScriptedUI("Hints", "HELP.MNI");
-          hudShowingHintMachineMsg = true;
+          ShowLevelSpecificHint(ctx);
         }
         else
         {
-          ShowTutorial(
-            TUT_HINT_MACHINE,
-            "THIS DEVICE WILL GIVE SPECIFIC HINTS.*FIND THE SPECIAL BLUE GLOBE AND*BRING IT BACK HERE.");
+          ShowTutorial(ctx, TUT_HINT_MACHINE);
         }
         break;
 
       case ACT_SPECIAL_HINT_GLOBE:
-        PlaySound(SND_ITEM_PICKUP);
+        PlaySound(ctx, SND_ITEM_PICKUP);
 
         ShowInGameMessage(
+          ctx,
           "BRING THIS SPECIAL CRYSTAL GLOBE*BACK TO THE PEDESTAL TO RECEIVE A*SPECIAL HINT FOR THIS LEVEL.");
 
-        AddInventoryItem(ACT_SPECIAL_HINT_GLOBE_ICON);
+        AddInventoryItem(ctx, ACT_SPECIAL_HINT_GLOBE_ICON);
 
         SpawnEffect(
-          ACT_SCORE_NUMBER_FX_10000, state->x, state->y, EM_SCORE_NUMBER, 0);
-        GiveScore(10000);
+          ctx,
+          ACT_SCORE_NUMBER_FX_10000,
+          state->x,
+          state->y,
+          EM_SCORE_NUMBER,
+          0);
+        GiveScore(ctx, 10000);
 
         state->deleted = true;
         break;
 
       case ACT_BONUS_GLOBE_SHELL:
         {
-          i = ACT_SCORE_NUMBER_FX_500;
+          int16_t i = ACT_SCORE_NUMBER_FX_500;
 
-          GiveScore(state->scoreGiven);
+          GiveScore(ctx, state->scoreGiven);
 
           switch (state->scoreGiven)
           {
@@ -1194,9 +1306,9 @@ void pascal UpdateActorPlayerCollision(word handle)
               break;
           }
 
-          SpawnEffect(i, state->x, state->y, EM_SCORE_NUMBER, 0);
+          SpawnEffect(ctx, i, state->x, state->y, EM_SCORE_NUMBER, 0);
 
-          PlaySound(SND_ITEM_PICKUP);
+          PlaySound(ctx, SND_ITEM_PICKUP);
 
           state->deleted = true;
         }
@@ -1204,11 +1316,10 @@ void pascal UpdateActorPlayerCollision(word handle)
 
       case ACT_TELEPORTER_2:
         if (
-          state->x <= plPosX && state->x + 3 >= plPosX &&
-          state->y == plPosY && plState == PS_NORMAL)
+          state->x <= ctx->plPosX && state->x + 3 >= ctx->plPosX &&
+          state->y == ctx->plPosY && ctx->plState == PS_NORMAL)
         {
-          ShowTutorial(
-            TUT_TELEPORTER, "PRESS UP OR ENTER TO USE*THE TRANSPORTER.*");
+          ShowTutorial(ctx, TUT_TELEPORTER);
         }
 
         // Check if the player is interacting with the teleporter.
@@ -1216,14 +1327,14 @@ void pascal UpdateActorPlayerCollision(word handle)
         // need to do an additional check here even though we already called
         // AreSpritesTouching() at the top of this function.
         if (
-          state->x <= plPosX && state->x + 3 >= plPosX && state->y == plPosY &&
-          (inputMoveUp || kbKeyState[SCANCODE_ENTER]) &&
-          plState == PS_NORMAL)
+          state->x <= ctx->plPosX && state->x + 3 >= ctx->plPosX &&
+          state->y == ctx->plPosY && ctx->inputMoveUp &&
+          ctx->plState == PS_NORMAL)
         {
           byte counterpartId;
           ActorState* candidate;
 
-          PlaySound(SND_TELEPORT);
+          PlaySound(ctx, SND_TELEPORT);
 
           // The way the teleport target is found is based on the actor ID.
           // There are two actor IDs that both spawn a teleporter into the
@@ -1244,18 +1355,18 @@ void pascal UpdateActorPlayerCollision(word handle)
           // if enabled.
           if (state->var2 == ACT_TELEPORTER_1)
           {
-            if (mapSwitchBackdropOnTeleport)
+            if (ctx->mapSwitchBackdropOnTeleport)
             {
-              bdAddressAdjust = 0x4000;
+              ctx->bdUseSecondary = true;
             }
 
             counterpartId = ACT_TELEPORTER_2;
           }
           else
           {
-            if (mapSwitchBackdropOnTeleport)
+            if (ctx->mapSwitchBackdropOnTeleport)
             {
-              bdAddressAdjust = 0;
+              ctx->bdUseSecondary = false;
             }
 
             counterpartId = ACT_TELEPORTER_1;
@@ -1263,9 +1374,11 @@ void pascal UpdateActorPlayerCollision(word handle)
 
           // Now go through the entire list of actors, and find the first one
           // that is a) a teleporter and b) has the right counterpart ID.
-          for (i = 0; i < gmNumActors; i++)
+          int16_t i;
+
+          for (i = 0; i < ctx->gmNumActors; i++)
           {
-            candidate = gmActorStates + i;
+            candidate = ctx->gmActorStates + i;
 
             if (
               counterpartId == candidate->var2 &&
@@ -1276,52 +1389,52 @@ void pascal UpdateActorPlayerCollision(word handle)
               // Clear any flying tile debris, since debris pieces don't take
               // the camera position into account and thus would suddenly appear
               // at the new location unless cleared.
-              if (gmExplodingSectionTicksElapsed)
+              if (ctx->gmExplodingSectionTicksElapsed)
               {
-                gmExplodingSectionTicksElapsed = 0;
+                ctx->gmExplodingSectionTicksElapsed = 0;
               }
 
-              TeleportTo(candidate->x, candidate->y);
+              TeleportTo(ctx, candidate->x, candidate->y);
               break;
             }
           }
 
           // We didn't find a suitable destination. If there's only one
           // teleporter in a level, it acts as level exit.
-          if (i == gmNumActors)
+          if (i == ctx->gmNumActors)
           {
-            gmGameState = GS_LEVEL_FINISHED;
+            ctx->gmGameState = GS_LEVEL_FINISHED;
           }
         }
         break;
-
     }
   }
 }
 
 
 /** Apply damage to actor. Return true if actor was killed, false otherwise */
-bool pascal DamageActor(word damage, word handle)
+bool pascal DamageActor(Context* ctx, word damage, word handle)
 {
-  ActorState* actor = gmActorStates + handle;
+  ActorState* actor = ctx->gmActorStates + handle;
 
   actor->health -= damage;
   actor->drawStyle = DS_WHITEFLASH;
 
   if (actor->health <= 0)
   {
-    GiveScore(actor->scoreGiven);
+    GiveScore(ctx, actor->scoreGiven);
 
-    if (actor->id == gmPlayerEatingActor && plState == PS_GETTING_EATEN)
+    if (
+      actor->id == ctx->gmPlayerEatingActor && ctx->plState == PS_GETTING_EATEN)
     {
-      plState = PS_NORMAL;
+      ctx->plState = PS_NORMAL;
     }
 
     return true;
   }
   else
   {
-    PlaySound(SND_ENEMY_HIT);
+    PlaySound(ctx, SND_ENEMY_HIT);
 
     return false;
   }
@@ -1337,12 +1450,15 @@ bool pascal DamageActor(word damage, word handle)
  * It primarily defines what kind of effects (explosions, particles, debris) to
  * trigger when an actor is destroyed by the player.
  */
-void pascal HandleActorShotCollision(int damage, word handle)
+void pascal HandleActorShotCollision(Context* ctx, int16_t damage, word handle)
 {
-  register ActorState* state = gmActorStates + handle;
-  register int i;
+  register ActorState* state = ctx->gmActorStates + handle;
+  register int16_t i;
 
-  if (!damage) { return; }
+  if (!damage)
+  {
+    return;
+  }
 
   switch (state->id)
   {
@@ -1355,77 +1471,67 @@ void pascal HandleActorShotCollision(int damage, word handle)
       break;
 
     case ACT_RED_BIRD:
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
         state->deleted = true;
-        GiveScore(100);
-        SpawnParticles(state->x, state->y, 0, CLR_RED);
-        SpawnEffect(ACT_EXPLOSION_FX_1, state->x, state->y, EM_NONE, 0);
+        GiveScore(ctx, 100);
+        SpawnParticles(ctx, state->x, state->y, 0, CLR_RED);
+        SpawnEffect(ctx, ACT_EXPLOSION_FX_1, state->x, state->y, EM_NONE, 0);
       }
       break;
 
     case ACT_BOSS_EPISODE_2:
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
         // Trigger death animation
         state->var5 = 1;
       }
-
-      HUD_DrawBossHealthBar(gmBossHealth = state->health);
       break;
 
     case ACT_BOSS_EPISODE_1:
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
         // Trigger death animation
         state->var3 = 2;
       }
-
-      HUD_DrawBossHealthBar(gmBossHealth = state->health);
       break;
 
     case ACT_BOSS_EPISODE_3:
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
         // Trigger death animation
         state->var3 = 2;
       }
-
-      HUD_DrawBossHealthBar(gmBossHealth = state->health / 4);
       break;
 
     case ACT_BOSS_EPISODE_4:
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
         // Trigger death animation
         state->var3 = 2;
       }
-
-      HUD_DrawBossHealthBar(gmBossHealth = state->health);
       break;
 
     case ACT_EYEBALL_THROWER_L:
     case ACT_EYEBALL_THROWER_R:
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
-        int DEBRIS_SPEC[] = { 5,
-          0, -6, EM_FLY_UP, 0,
-          0, -5, EM_FLY_LEFT, 1,
-          0, -4, EM_FLY_RIGHT, 0,
-          0, -3, EM_FLY_UPPER_LEFT, 1,
-          0, -1, EM_FLY_UP, 0
-        };
+        int16_t DEBRIS_SPEC[] = {
+          5, 0, -6, EM_FLY_UP,    0, 0, -5, EM_FLY_LEFT,
+          1, 0, -4, EM_FLY_RIGHT, 0, 0, -3, EM_FLY_UPPER_LEFT,
+          1, 0, -1, EM_FLY_UP,    0};
 
-        PlaySound(SND_BIOLOGICAL_ENEMY_DESTROYED);
+        PlaySound(ctx, SND_BIOLOGICAL_ENEMY_DESTROYED);
         state->deleted = true;
-        SpawnDestructionEffects(handle, DEBRIS_SPEC, ACT_EYEBALL_PROJECTILE);
-        SpawnParticles(state->x, state->y, 0, CLR_LIGHT_GREEN);
+        SpawnDestructionEffects(
+          ctx, handle, DEBRIS_SPEC, ACT_EYEBALL_PROJECTILE);
+        SpawnParticles(ctx, state->x, state->y, 0, CLR_LIGHT_GREEN);
       }
       break;
 
     case ACT_MISSILE_BROKEN:
     case ACT_MISSILE_INTACT:
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
         if (state->var3)
         {
@@ -1444,7 +1550,7 @@ void pascal HandleActorShotCollision(int damage, word handle)
           //
           // I'm not sure why the code here doesn't check state->id instead of
           // var3.
-          if (retPlayerShotDirection == SD_LEFT)
+          if (ctx->retPlayerShotDirection == SD_LEFT)
           {
             state->var1 = 1;
           }
@@ -1454,22 +1560,22 @@ void pascal HandleActorShotCollision(int damage, word handle)
           }
         }
 
-        SpawnParticles(state->x + 5, state->y, 0, CLR_WHITE);
+        SpawnParticles(ctx, state->x + 5, state->y, 0, CLR_WHITE);
       }
       break;
 
     case ACT_ELECTRIC_REACTOR:
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
         FLASH_SCREEN(SFC_YELLOW);
-        SpawnPlayerShot(ACT_REACTOR_FIRE_L, state->x, state->y, SD_LEFT);
-        SpawnPlayerShot(ACT_REACTOR_FIRE_R, state->x, state->y, SD_RIGHT);
+        SpawnPlayerShot(ctx, ACT_REACTOR_FIRE_L, state->x, state->y, SD_LEFT);
+        SpawnPlayerShot(ctx, ACT_REACTOR_FIRE_R, state->x, state->y, SD_RIGHT);
         SpawnBurnEffect(
-          ACT_WHITE_CIRCLE_FLASH_FX, state->id, state->x, state->y);
+          ctx, ACT_WHITE_CIRCLE_FLASH_FX, state->id, state->x, state->y);
 
         // Make the sprite appear for a few more frames after the actor is
         // deleted
-        SpawnEffect(ACT_ELECTRIC_REACTOR, state->x, state->y, EM_NONE, 0);
+        SpawnEffect(ctx, ACT_ELECTRIC_REACTOR, state->x, state->y, EM_NONE, 0);
 
         // [NOTE] This spawns 24 effects in total. There can only be 18 effects
         // at max, and we've already used 2 effect slots for the burn effect
@@ -1479,12 +1585,14 @@ void pascal HandleActorShotCollision(int damage, word handle)
         for (i = 0; i < 12; i++)
         {
           SpawnEffect(
+            ctx,
             ACT_FLAME_FX,
             state->x + 1,
             state->y - 9 + i,
             i & 2 ? EM_FLY_LEFT : EM_FLY_RIGHT,
             i * 3);
           SpawnEffect(
+            ctx,
             ACT_SMOKE_CLOUD_FX,
             state->x - 1,
             state->y - 9 + i,
@@ -1496,9 +1604,9 @@ void pascal HandleActorShotCollision(int damage, word handle)
 
         // Switch to the alternate backdrop in case the "reactor destruction
         // event" is active for the current level. This is used in E1L5.
-        if (mapHasReactorDestructionEvent)
+        if (ctx->mapHasReactorDestructionEvent)
         {
-          bdAddressAdjust = 0x4000;
+          ctx->bdUseSecondary = true;
         }
 
         state->deleted = true;
@@ -1506,34 +1614,34 @@ void pascal HandleActorShotCollision(int damage, word handle)
       break;
 
     case ACT_SLIME_CONTAINER:
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
         // Trigger the "container breaking" animation. The container actor
         // stays active, it plays the animation and then spawns a slime blob.
         // See Act_SlimeContainer.
         state->var1 = 1;
         state->frame = 2;
-        PlaySound(SND_GLASS_BREAKING);
+        PlaySound(ctx, SND_GLASS_BREAKING);
         state->drawStyle = DS_WHITEFLASH;
-        SpawnParticles(state->x + 1, state->y, 0, CLR_WHITE);
+        SpawnParticles(ctx, state->x + 1, state->y, 0, CLR_WHITE);
       }
       break;
 
     case ACT_HOVERBOT:
     case ACT_BOSS_EPISODE_4_SHOT:
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
-        SpawnBurnEffect(ACT_FLAME_FX, state->id, state->x, state->y);
+        SpawnBurnEffect(ctx, ACT_FLAME_FX, state->id, state->x, state->y);
 
         if (state->id == ACT_HOVERBOT)
         {
           SpawnEffect(
-            ACT_HOVERBOT_DEBRIS_1, state->x, state->y - 2, EM_FLY_UP, 0);
+            ctx, ACT_HOVERBOT_DEBRIS_1, state->x, state->y - 2, EM_FLY_UP, 0);
           SpawnEffect(
-            ACT_HOVERBOT_DEBRIS_2, state->x, state->y, EM_FLY_DOWN, 0);
+            ctx, ACT_HOVERBOT_DEBRIS_2, state->x, state->y, EM_FLY_DOWN, 0);
         }
 
-        SpawnParticles(state->x + 1, state->y, 0, CLR_LIGHT_GREY);
+        SpawnParticles(ctx, state->x + 1, state->y, 0, CLR_LIGHT_GREY);
 
         PLAY_EXPLOSION_SOUND();
         state->deleted = true;
@@ -1547,7 +1655,7 @@ void pascal HandleActorShotCollision(int damage, word handle)
       {
         state->var5 = 1;
 
-        if (state->x > plPosX)
+        if (state->x > ctx->plPosX)
         {
           state->var1 = 1;
         }
@@ -1557,11 +1665,11 @@ void pascal HandleActorShotCollision(int damage, word handle)
         }
       }
 
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
-        SpawnParticles(state->x + 1, state->y, 0, CLR_LIGHT_BLUE);
+        SpawnParticles(ctx, state->x + 1, state->y, 0, CLR_LIGHT_BLUE);
         PLAY_EXPLOSION_SOUND();
-        SpawnBurnEffect(ACT_FLAME_FX, state->id, state->x, state->y);
+        SpawnBurnEffect(ctx, ACT_FLAME_FX, state->id, state->x, state->y);
         state->deleted = true;
       }
       break;
@@ -1576,32 +1684,27 @@ void pascal HandleActorShotCollision(int damage, word handle)
     case ACT_UGLY_GREEN_BIRD:
     case ACT_GREEN_CREATURE_L:
     case ACT_GREEN_CREATURE_R:
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
-        SpawnBurnEffect(ACT_FLAME_FX, state->id, state->x, state->y);
-        SpawnParticles(state->x + 1, state->y, 0, RandomNumber() & 15);
+        SpawnBurnEffect(ctx, ACT_FLAME_FX, state->id, state->x, state->y);
+        SpawnParticles(ctx, state->x + 1, state->y, 0, RandomNumber(ctx) & 15);
 
         if (
           state->id == ACT_BIG_GREEN_CAT_L ||
           state->id == ACT_BIG_GREEN_CAT_R ||
           state->id == ACT_GREEN_CREATURE_L ||
           state->id == ACT_GREEN_CREATURE_R ||
-          state->id == ACT_CEILING_SUCKER ||
-          state->id == ACT_SLIME_BLOB_2 ||
-          state->id == ACT_SLIME_BLOB ||
-          state->id == ACT_UGLY_GREEN_BIRD)
+          state->id == ACT_CEILING_SUCKER || state->id == ACT_SLIME_BLOB_2 ||
+          state->id == ACT_SLIME_BLOB || state->id == ACT_UGLY_GREEN_BIRD)
         {
-          int DEBRIS_SPEC[] = { 6,
-            1, 2, EM_FLY_UP, 0,
-            0, 0, EM_FLY_UPPER_RIGHT, 1,
-            -1, 1, EM_FLY_UPPER_LEFT, 2,
-            1, -1, EM_FLY_DOWN, 3,
-            -1, 2, EM_FLY_UPPER_RIGHT, 4,
-            1, 2, EM_FLY_UPPER_LEFT, 5
-          };
+          int16_t DEBRIS_SPEC[] = {
+            6, 1,  2, EM_FLY_UP,          0, 0, 0,  EM_FLY_UPPER_RIGHT,
+            1, -1, 1, EM_FLY_UPPER_LEFT,  2, 1, -1, EM_FLY_DOWN,
+            3, -1, 2, EM_FLY_UPPER_RIGHT, 4, 1, 2,  EM_FLY_UPPER_LEFT,
+            5};
 
           SpawnDestructionEffects(
-            handle, DEBRIS_SPEC, ACT_BIOLOGICAL_ENEMY_DEBRIS);
+            ctx, handle, DEBRIS_SPEC, ACT_BIOLOGICAL_ENEMY_DEBRIS);
 
           if (
             state->id == ACT_GREEN_CREATURE_L ||
@@ -1610,15 +1713,15 @@ void pascal HandleActorShotCollision(int damage, word handle)
             state->y -= 2;
             state->x -= 2;
             SpawnDestructionEffects(
-              handle, DEBRIS_SPEC, ACT_BIOLOGICAL_ENEMY_DEBRIS);
+              ctx, handle, DEBRIS_SPEC, ACT_BIOLOGICAL_ENEMY_DEBRIS);
 
             state->x += 2;
             state->y -= 2;
             SpawnDestructionEffects(
-              handle, DEBRIS_SPEC, ACT_BIOLOGICAL_ENEMY_DEBRIS);
+              ctx, handle, DEBRIS_SPEC, ACT_BIOLOGICAL_ENEMY_DEBRIS);
           }
 
-          PlaySound(SND_BIOLOGICAL_ENEMY_DESTROYED);
+          PlaySound(ctx, SND_BIOLOGICAL_ENEMY_DESTROYED);
         }
         else
         {
@@ -1631,21 +1734,22 @@ void pascal HandleActorShotCollision(int damage, word handle)
 
     case ACT_SKELETON:
     case ACT_RIGELATIN_SOLDIER:
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
         PLAY_EXPLOSION_SOUND();
 
         if (state->id == ACT_SKELETON)
         {
-          SpawnBurnEffect(ACT_FLAME_FX, state->id, state->x, state->y);
+          SpawnBurnEffect(ctx, ACT_FLAME_FX, state->id, state->x, state->y);
         }
         else
         {
-          SpawnBurnEffect(ACT_EXPLOSION_FX_1, state->id, state->x, state->y);
+          SpawnBurnEffect(
+            ctx, ACT_EXPLOSION_FX_1, state->id, state->x, state->y);
         }
 
-        SpawnParticles(state->x + 1, state->y, 0, RandomNumber() & 15);
-        GiveScore(100);
+        SpawnParticles(ctx, state->x + 1, state->y, 0, RandomNumber(ctx) & 15);
+        GiveScore(ctx, 100);
         state->deleted = true;
       }
       break;
@@ -1656,18 +1760,17 @@ void pascal HandleActorShotCollision(int damage, word handle)
       // to 0 when attaching to the player, and that excludes it from
       // shot collision detection.
       if (
-        plAttachedSpider1 == handle ||
-        plAttachedSpider2 == handle ||
-        plAttachedSpider3 == handle)
+        ctx->plAttachedSpider1 == handle || ctx->plAttachedSpider2 == handle ||
+        ctx->plAttachedSpider3 == handle)
       {
         break;
       }
 
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
         SpawnEffect(
-          ACT_EXPLOSION_FX_1, state->x - 1, state->y + 1, EM_NONE, 0);
-        GiveScore(100);
+          ctx, ACT_EXPLOSION_FX_1, state->x - 1, state->y + 1, EM_NONE, 0);
+        GiveScore(ctx, 100);
         state->deleted = true;
       }
       break;
@@ -1681,12 +1784,13 @@ void pascal HandleActorShotCollision(int damage, word handle)
         // here, the actor still causes player shots to stop when hitting it
         // during its death animation.
 
-        PlaySound(SND_BIOLOGICAL_ENEMY_DESTROYED);
+        PlaySound(ctx, SND_BIOLOGICAL_ENEMY_DESTROYED);
 
-        switch (retPlayerShotDirection)
+        switch (ctx->retPlayerShotDirection)
         {
           case SD_LEFT:
             SpawnEffect(
+              ctx,
               ACT_PRISONER_HAND_DEBRIS,
               state->x,
               state->y,
@@ -1696,6 +1800,7 @@ void pascal HandleActorShotCollision(int damage, word handle)
 
           case SD_RIGHT:
             SpawnEffect(
+              ctx,
               ACT_PRISONER_HAND_DEBRIS,
               state->x,
               state->y,
@@ -1707,24 +1812,21 @@ void pascal HandleActorShotCollision(int damage, word handle)
         state->var1 = 2;
         state->frame = 5;
 
-        SpawnParticles(state->x + 3, state->y, 0, CLR_RED);
-        GiveScore(500);
+        SpawnParticles(ctx, state->x + 3, state->y, 0, CLR_RED);
+        GiveScore(ctx, 500);
       }
       break;
 
     case ACT_LASER_TURRET:
       if (state->var1 == 0) // not currently spinning
       {
-        // [NOTE] I'm not sure why there are two variables to track the player's
-        // current weapon. This is the only place where this alternate variable
-        // is used, everything else uses plWeapon.
-        // The variable is set in HUD_DrawWeapon().
-        if (plWeapon_hud != WPN_REGULAR || plState == PS_USING_SHIP)
+        if (ctx->plWeapon != WPN_REGULAR || ctx->plState == PS_USING_SHIP)
         {
-          switch (retPlayerShotDirection)
+          switch (ctx->retPlayerShotDirection)
           {
             case SD_LEFT:
               SpawnEffect(
+                ctx,
                 ACT_LASER_TURRET,
                 state->x,
                 state->y,
@@ -1734,6 +1836,7 @@ void pascal HandleActorShotCollision(int damage, word handle)
 
             case SD_RIGHT:
               SpawnEffect(
+                ctx,
                 ACT_LASER_TURRET,
                 state->x,
                 state->y,
@@ -1743,42 +1846,39 @@ void pascal HandleActorShotCollision(int damage, word handle)
 
             default:
               SpawnEffect(
-                ACT_LASER_TURRET,
-                state->x,
-                state->y,
-                EM_FLY_UP,
-                0);
+                ctx, ACT_LASER_TURRET, state->x, state->y, EM_FLY_UP, 0);
               break;
           }
 
-          GiveScore(499); // 1 point is already given by the code below
+          GiveScore(ctx, 499); // 1 point is already given by the code below
           state->deleted = true;
-          gmTurretsDestroyed++;
+          ctx->gmTurretsDestroyed++;
         }
 
-        SpawnEffect(ACT_FLAME_FX, state->x - 1, state->y + 2, EM_RISE_UP, 0);
+        SpawnEffect(
+          ctx, ACT_FLAME_FX, state->x - 1, state->y + 2, EM_RISE_UP, 0);
         PLAY_EXPLOSION_SOUND();
         state->var1 = 40; // Make the turret spin (see Act_LaserTurret())
-        GiveScore(1);
+        GiveScore(ctx, 1);
       }
       break;
 
     case ACT_BOUNCING_SPIKE_BALL:
       // Make it fly left/right when hit on either side. See Act_SpikeBall.
-      if (retPlayerShotDirection == SD_LEFT)
+      if (ctx->retPlayerShotDirection == SD_LEFT)
       {
         state->var1 = 1;
       }
-      else if (retPlayerShotDirection == SD_RIGHT)
+      else if (ctx->retPlayerShotDirection == SD_RIGHT)
       {
         state->var1 = 2;
       }
 
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
-        SpawnParticles(state->x + 1, state->y, 0, CLR_WHITE);
+        SpawnParticles(ctx, state->x + 1, state->y, 0, CLR_WHITE);
         SpawnEffect(
-          ACT_EXPLOSION_FX_1, state->x - 1, state->y + 1, EM_NONE, 0);
+          ctx, ACT_EXPLOSION_FX_1, state->x - 1, state->y + 1, EM_NONE, 0);
         state->deleted = true;
       }
       break;
@@ -1786,21 +1886,21 @@ void pascal HandleActorShotCollision(int damage, word handle)
     case ACT_SMALL_FLYING_SHIP_1:
     case ACT_SMALL_FLYING_SHIP_2:
     case ACT_SMALL_FLYING_SHIP_3:
-      SpawnParticles(state->x, state->y, 0, RandomNumber() & 15);
+      SpawnParticles(ctx, state->x, state->y, 0, RandomNumber(ctx) & 15);
       state->deleted = true;
       PLAY_EXPLOSION_SOUND();
-      GiveScore(100);
+      GiveScore(ctx, 100);
       break;
 
     case ACT_CAMERA_ON_CEILING:
     case ACT_CAMERA_ON_FLOOR:
-      SpawnParticles(state->x, state->y, 0, RandomNumber() & 15);
+      SpawnParticles(ctx, state->x, state->y, 0, RandomNumber(ctx) & 15);
       SpawnEffect(
-        ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
+        ctx, ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
       state->deleted = true;
-      gmCamerasDestroyed++;
+      ctx->gmCamerasDestroyed++;
       PLAY_EXPLOSION_SOUND();
-      GiveScore(100);
+      GiveScore(ctx, 100);
       break;
 
     case ACT_FLAME_THROWER_BOT_R:
@@ -1821,33 +1921,49 @@ void pascal HandleActorShotCollision(int damage, word handle)
     case ACT_UNICYCLE_BOT:
     case ACT_FLOATING_EXIT_SIGN_L:
     case ACT_FLOATING_ARROW:
-      if (DamageActor(damage, handle))
+      if (DamageActor(ctx, damage, handle))
       {
-        int DEBRIS_SPEC[] = { 3,
-           0,  0, EM_NONE, 0,
-          -1, -2, EM_NONE, 2,
-           1, -3, EM_NONE, 4,
+        int16_t DEBRIS_SPEC[] = {
+          3,
+          0,
+          0,
+          EM_NONE,
+          0,
+          -1,
+          -2,
+          EM_NONE,
+          2,
+          1,
+          -3,
+          EM_NONE,
+          4,
         };
 
-        SpawnDestructionEffects(
-          handle, DEBRIS_SPEC, ACT_EXPLOSION_FX_1);
+        SpawnDestructionEffects(ctx, handle, DEBRIS_SPEC, ACT_EXPLOSION_FX_1);
 
         state->deleted = true;
 
-        SpawnParticles(state->x, state->y, 0, RandomNumber() & 15);
-        SpawnParticles(state->x - 1, state->y - 1, -1, RandomNumber() & 15);
-        SpawnParticles(state->x + 1, state->y - 2, 1, RandomNumber() & 15);
+        SpawnParticles(ctx, state->x, state->y, 0, RandomNumber(ctx) & 15);
+        SpawnParticles(
+          ctx, state->x - 1, state->y - 1, -1, RandomNumber(ctx) & 15);
+        SpawnParticles(
+          ctx, state->x + 1, state->y - 2, 1, RandomNumber(ctx) & 15);
 
         if (state->id == ACT_RADAR_DISH)
         {
-          gmRadarDishesLeft--;
+          ctx->gmRadarDishesLeft--;
           SpawnEffect(
-            ACT_SCORE_NUMBER_FX_2000, state->x, state->y, EM_SCORE_NUMBER, 0);
+            ctx,
+            ACT_SCORE_NUMBER_FX_2000,
+            state->x,
+            state->y,
+            EM_SCORE_NUMBER,
+            0);
 
           // For some reason, the actor itself has a score of 500 (given by
-          // DamageActor()), but the actual score value is 2000. So 1500 extra
-          // points are given here.
-          GiveScore(1500);
+          // DamageActor(ctx, )), but the actual score value is 2000. So 1500
+          // extra points are given here.
+          GiveScore(ctx, 1500);
         }
 
         if (
@@ -1855,15 +1971,25 @@ void pascal HandleActorShotCollision(int damage, word handle)
           state->id == ACT_FLOATING_EXIT_SIGN_L)
         {
           SpawnEffect(
-            ACT_SCORE_NUMBER_FX_10000, state->x, state->y, EM_SCORE_NUMBER, 0);
-          GiveScore(10000);
+            ctx,
+            ACT_SCORE_NUMBER_FX_10000,
+            state->x,
+            state->y,
+            EM_SCORE_NUMBER,
+            0);
+          GiveScore(ctx, 10000);
         }
 
         if (state->id == ACT_FLOATING_ARROW)
         {
           SpawnEffect(
-            ACT_SCORE_NUMBER_FX_500, state->x, state->y, EM_SCORE_NUMBER, 0);
-          GiveScore(500);
+            ctx,
+            ACT_SCORE_NUMBER_FX_500,
+            state->x,
+            state->y,
+            EM_SCORE_NUMBER,
+            0);
+          GiveScore(ctx, 500);
         }
       }
       break;
@@ -1873,25 +1999,25 @@ void pascal HandleActorShotCollision(int damage, word handle)
     case ACT_GREEN_BOX:
     case ACT_RED_BOX:
     case ACT_BLUE_BOX:
-      if (DamageActor(damage, handle) && !state->var1)
+      if (DamageActor(ctx, damage, handle) && !state->var1)
       {
         // Trigger the "spawn item" sequence in Act_ItemBox
         state->var1 = 1;
 
         PLAY_EXPLOSION_SOUND();
 
-        SpawnParticles(state->x + 1, state->y, 0, CLR_DARK_RED);
-        SpawnParticles(state->x + 1, state->y, 0, CLR_WHITE);
-        SpawnParticles(state->x + 1, state->y, 0, CLR_LIGHT_BLUE);
+        SpawnParticles(ctx, state->x + 1, state->y, 0, CLR_DARK_RED);
+        SpawnParticles(ctx, state->x + 1, state->y, 0, CLR_WHITE);
+        SpawnParticles(ctx, state->x + 1, state->y, 0, CLR_LIGHT_BLUE);
       }
       break;
 
     case ACT_TURKEY:
-      PlaySound(SND_BIOLOGICAL_ENEMY_DESTROYED);
+      PlaySound(ctx, SND_BIOLOGICAL_ENEMY_DESTROYED);
 
       if (state->var2 != 2) // should always be true
       {
-        SpawnEffect(ACT_SMOKE_CLOUD_FX, state->x, state->y, EM_NONE, 0);
+        SpawnEffect(ctx, ACT_SMOKE_CLOUD_FX, state->x, state->y, EM_NONE, 0);
       }
 
       state->health = 0; // make invincible
@@ -1911,14 +2037,24 @@ void pascal HandleActorShotCollision(int damage, word handle)
       break;
 
     case ACT_MINI_NUKE:
-      SpawnEffect(ACT_NUCLEAR_EXPLOSION, state->x, state->y, EM_NONE, 0);
+      SpawnEffect(ctx, ACT_NUCLEAR_EXPLOSION, state->x, state->y, EM_NONE, 0);
 
       for (i = 4; i < 20; i += 4)
       {
         SpawnEffect(
-          ACT_NUCLEAR_EXPLOSION, state->x - i, state->y, EM_FLY_DOWN, i >> 1);
+          ctx,
+          ACT_NUCLEAR_EXPLOSION,
+          state->x - i,
+          state->y,
+          EM_FLY_DOWN,
+          i >> 1);
         SpawnEffect(
-          ACT_NUCLEAR_EXPLOSION, state->x + i, state->y, EM_FLY_DOWN, i >> 1);
+          ctx,
+          ACT_NUCLEAR_EXPLOSION,
+          state->x + i,
+          state->y,
+          EM_FLY_DOWN,
+          i >> 1);
       }
 
       PLAY_EXPLOSION_SOUND();
@@ -1933,30 +2069,22 @@ void pascal HandleActorShotCollision(int damage, word handle)
 
         PLAY_EXPLOSION_SOUND();
 
-        gmBombBoxesLeft--;
+        ctx->gmBombBoxesLeft--;
 
-        SpawnParticles(state->x + 1, state->y, 0, CLR_WHITE);
+        SpawnParticles(ctx, state->x + 1, state->y, 0, CLR_WHITE);
 
         for (i = 0; i < 12; i += 2)
         {
           if (!spawnFailedLeft)
           {
             spawnFailedLeft += SpawnEffect(
-              ACT_FIRE_BOMB_FIRE,
-              state->x - 2 - i,
-              state->y,
-              EM_NONE,
-              i);
+              ctx, ACT_FIRE_BOMB_FIRE, state->x - 2 - i, state->y, EM_NONE, i);
           }
 
           if (!spawnFailedRight)
           {
             spawnFailedRight += SpawnEffect(
-              ACT_FIRE_BOMB_FIRE,
-              state->x + i + 2,
-              state->y,
-              EM_NONE,
-              i);
+              ctx, ACT_FIRE_BOMB_FIRE, state->x + i + 2, state->y, EM_NONE, i);
           }
         }
 
@@ -1966,22 +2094,31 @@ void pascal HandleActorShotCollision(int damage, word handle)
 
     case ACT_BONUS_GLOBE_SHELL:
       SpawnEffect(
-        ACT_BONUS_GLOBE_DEBRIS_1, state->x, state->y, EM_FLY_UPPER_LEFT, 0);
+        ctx,
+        ACT_BONUS_GLOBE_DEBRIS_1,
+        state->x,
+        state->y,
+        EM_FLY_UPPER_LEFT,
+        0);
       SpawnEffect(
-        ACT_BONUS_GLOBE_DEBRIS_2, state->x + 2, state->y, EM_FLY_UPPER_RIGHT, 0);
-      SpawnEffect(
-        state->var1, state->x, state->y, EM_FLY_UP, 0);
+        ctx,
+        ACT_BONUS_GLOBE_DEBRIS_2,
+        state->x + 2,
+        state->y,
+        EM_FLY_UPPER_RIGHT,
+        0);
+      SpawnEffect(ctx, state->var1, state->x, state->y, EM_FLY_UP, 0);
 
       state->drawStyle = DS_WHITEFLASH;
 
-      GiveScore(100);
+      GiveScore(ctx, 100);
       SpawnEffect(
-        ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
-      PlaySound(SND_GLASS_BREAKING);
-      SpawnParticles(state->x + 1, state->y, 0, CLR_WHITE);
+        ctx, ACT_SCORE_NUMBER_FX_100, state->x, state->y, EM_SCORE_NUMBER, 0);
+      PlaySound(ctx, SND_GLASS_BREAKING);
+      SpawnParticles(ctx, state->x + 1, state->y, 0, CLR_WHITE);
 
       state->deleted = true;
-      gmOrbsLeft--;
+      ctx->gmOrbsLeft--;
       break;
   }
 }
@@ -2007,14 +2144,14 @@ void pascal HandleActorShotCollision(int damage, word handle)
  *
  * TODO: Document the allowStairStepping flag
  */
-int pascal ApplyWorldCollision(word handle, word direction)
+int16_t pascal ApplyWorldCollision(Context* ctx, word handle, word direction)
 {
-  register ActorState* actor = gmActorStates + handle;
+  register ActorState* actor = ctx->gmActorStates + handle;
 
   if (direction == MD_UP || direction == MD_DOWN)
   {
-    register int result = CheckWorldCollision(
-      direction, actor->id, actor->frame, actor->x, actor->y);
+    register int16_t result = CheckWorldCollision(
+      ctx, direction, actor->id, actor->frame, actor->x, actor->y);
 
     if (result)
     {
@@ -2039,7 +2176,7 @@ int pascal ApplyWorldCollision(word handle, word direction)
   if (direction == MD_LEFT)
   {
     register ibool canMove = !CheckWorldCollision(
-      MD_LEFT, actor->id, actor->frame, actor->x, actor->y);
+      ctx, MD_LEFT, actor->id, actor->frame, actor->x, actor->y);
 
     if (!canMove)
     {
@@ -2048,7 +2185,7 @@ int pascal ApplyWorldCollision(word handle, word direction)
     else
     {
       if (CheckWorldCollision(
-        MD_DOWN, actor->id, actor->frame, actor->x - 2, actor->y + 1))
+            ctx, MD_DOWN, actor->id, actor->frame, actor->x - 2, actor->y + 1))
       {
         canMove = true;
       }
@@ -2069,7 +2206,7 @@ int pascal ApplyWorldCollision(word handle, word direction)
   else // moving to the right
   {
     register ibool canMove = !CheckWorldCollision(
-      MD_RIGHT, actor->id, actor->frame, actor->x, actor->y);
+      ctx, MD_RIGHT, actor->id, actor->frame, actor->x, actor->y);
 
     if (!canMove)
     {
@@ -2078,7 +2215,7 @@ int pascal ApplyWorldCollision(word handle, word direction)
     else
     {
       if (CheckWorldCollision(
-        MD_DOWN, actor->id, actor->frame, actor->x + 2, actor->y + 1))
+            ctx, MD_DOWN, actor->id, actor->frame, actor->x + 2, actor->y + 1))
       {
         canMove = true;
       }
@@ -2100,15 +2237,15 @@ int pascal ApplyWorldCollision(word handle, word direction)
 
 
 /** Check if center-to-center distance between actor & player is below value */
-bool pascal PlayerInRange(word handle, word distance)
+bool pascal PlayerInRange(Context* ctx, word handle, word distance)
 {
-  register ActorState* actor = gmActorStates + handle;
+  register ActorState* actor = ctx->gmActorStates + handle;
   register word offset;
   word width;
   word actorCenterX;
   word playerOffsetToCenter = 1;
 
-  offset = gfxActorInfoData[actor->id] + (actor->frame << 3);
+  offset = ctx->gfxActorInfoData[actor->id] + (actor->frame << 3);
   width = AINFO_WIDTH(offset);
   actorCenterX = actor->x + width / 2;
 
@@ -2116,12 +2253,12 @@ bool pascal PlayerInRange(word handle, word distance)
   // if the player is facing left. That part of the sprite isn't considered
   // part of the player, so we offset by 1 to get the distance to the center
   // of the player's body.
-  if (plActorId == ACT_DUKE_L)
+  if (ctx->plActorId == ACT_DUKE_L)
   {
     playerOffsetToCenter += 1;
   }
 
-  if (DN2_abs(actorCenterX - (plPosX + playerOffsetToCenter)) <= distance)
+  if (DN2_abs(actorCenterX - (ctx->plPosX + playerOffsetToCenter)) <= distance)
   {
     return true;
   }
@@ -2132,409 +2269,35 @@ bool pascal PlayerInRange(word handle, word distance)
 }
 
 
-#include "actors.c"
-
-
 /** Spawn a new actor into the game world
-  *
-  * Creates an actor of the given type at the given location.
-  * Tries to reuse the state slot of a previously deleted actor if possible,
-  * otherwise the actor is added to the end of the list.
-  */
-void pascal SpawnActor(word id, word x, word y)
+ *
+ * Creates an actor of the given type at the given location.
+ * Tries to reuse the state slot of a previously deleted actor if possible,
+ * otherwise the actor is added to the end of the list.
+ */
+void pascal SpawnActor(Context* ctx, word id, word x, word y)
 {
-  int i;
+  int16_t i;
 
   // First, see if there's a free slot (actor that was deleted), and use it if
   // we find one
-  for (i = 0; i < gmNumActors; i++)
+  for (i = 0; i < ctx->gmNumActors; i++)
   {
-    ActorState* actor = gmActorStates + i;
+    ActorState* actor = ctx->gmActorStates + i;
 
     if (actor->deleted)
     {
-      SpawnActorInSlot(i, id, x, y);
+      SpawnActorInSlot(ctx, i, id, x, y);
       return;
     }
   }
 
   // Otherwise, place the actor at the end of the list if the maximum number of
   // actors hasn't been reached yet. If it has, fail silently.
-  if (gmNumActors < MAX_NUM_ACTORS)
+  if (ctx->gmNumActors < MAX_NUM_ACTORS)
   {
-    SpawnActorInSlot(gmNumActors, id, x, y);
-    gmNumActors++;
-  }
-}
-
-
-/** Load additional sprites needed by given actor
-  *
-  * Each actor has an associated sprite, but some actors require additional
-  * sprites.  E.g. because they have different sprites for facing left/right,
-  * are made up of multiple sprites, or can spawn other types of actors like
-  * projectiles, effects etc. Since the latter aren't placed into levels, they
-  * have to be loaded along with the actors that are able to spawn them into
-  * the world.
-  */
-void pascal LoadActorExtraSprites(word id)
-{
-  switch (id)
-  {
-    case ACT_RIGELATIN_SOLDIER:
-      LoadSprite(ACT_RIGELATIN_SOLDIER_SHOT);
-      // fallthrough (most likely unintentional)
-
-    case ACT_N:
-      LoadSpriteRange(ACT_LETTER_INDICATOR_N, ACT_LETTER_INDICATOR_M);
-      break;
-
-    case ACT_MESSENGER_DRONE_1:
-    case ACT_MESSENGER_DRONE_2:
-    case ACT_MESSENGER_DRONE_3:
-    case ACT_MESSENGER_DRONE_4:
-    case ACT_MESSENGER_DRONE_5:
-      LoadSpriteRange(ACT_MESSENGER_DRONE_BODY, ACT_MESSENGER_DRONE_FLAME_R);
-      break;
-
-    case ACT_CLOAKING_DEVICE:
-      LoadSprite(ACT_CLOAKING_DEVICE_ICON);
-      break;
-
-    case ACT_RED_BOX_TURKEY:
-      LoadSprite(ACT_TURKEY);
-      break;
-
-    case ACT_GREEN_CREATURE_L:
-    case ACT_GREEN_CREATURE_R:
-      LoadSprite(ACT_GREEN_CREATURE_EYE_FX_L);
-      LoadSpriteRange(ACT_GREEN_CREATURE_L, ACT_GREEN_CREATURE_SHELL_4_R);
-      LoadSprite(ACT_BIOLOGICAL_ENEMY_DEBRIS);
-      break;
-
-    case ACT_BIG_GREEN_CAT_L:
-    case ACT_BIG_GREEN_CAT_R:
-      LoadSpriteRange(ACT_BIG_GREEN_CAT_L, ACT_BIG_GREEN_CAT_R);
-      LoadSprite(ACT_BIOLOGICAL_ENEMY_DEBRIS);
-      break;
-
-    case ACT_SODA_CAN:
-    case ACT_SODA_6_PACK:
-      LoadSpriteRange(ACT_COKE_CAN_DEBRIS_1, ACT_COKE_CAN_DEBRIS_2);
-      break;
-
-    case ACT_METAL_GRABBER_CLAW:
-      LoadSpriteRange(
-        ACT_METAL_GRABBER_CLAW_DEBRIS_1, ACT_METAL_GRABBER_CLAW_DEBRIS_2);
-      break;
-
-    case ACT_BLUE_BONUS_GLOBE_1:
-      LoadSprite(ACT_SCORE_NUMBER_FX_500);
-      break;
-
-    case ACT_BLUE_BONUS_GLOBE_2:
-      LoadSprite(ACT_SCORE_NUMBER_FX_2000);
-      break;
-
-    case ACT_BLUE_BONUS_GLOBE_3:
-      LoadSprite(ACT_SCORE_NUMBER_FX_5000);
-      break;
-
-    case ACT_BLUE_BONUS_GLOBE_4:
-      LoadSprite(ACT_SCORE_NUMBER_FX_10000);
-      break;
-
-    case ACT_SLIME_PIPE:
-      LoadSprite(ACT_SLIME_DROP);
-      break;
-
-    case ACT_EYEBALL_THROWER_L:
-      LoadSpriteRange(ACT_EYEBALL_THROWER_R, ACT_EYEBALL_PROJECTILE);
-      break;
-
-    case ACT_DUKES_SHIP_R:
-      LoadSprite(ACT_DUKES_SHIP_L);
-      LoadSprite(ACT_DUKES_SHIP_LASER_SHOT);
-      LoadSprite(ACT_DUKES_SHIP_EXHAUST_FLAMES);
-      break;
-
-    case ACT_DUKE_L:
-    case ACT_DUKE_R:
-      switch (plWeapon)
-      {
-        case WPN_LASER:
-          LoadSpriteRange(
-            ACT_DUKE_LASER_SHOT_HORIZONTAL,
-            ACT_DUKE_LASER_SHOT_VERTICAL);
-          break;
-
-        case WPN_ROCKETLAUNCHER:
-          LoadSpriteRange(ACT_DUKE_ROCKET_UP, ACT_SMOKE_PUFF_FX);
-          break;
-
-        case WPN_FLAMETHROWER:
-          LoadSprite(ACT_DUKE_FLAME_SHOT_UP);
-          LoadSpriteRange(
-            ACT_DUKE_FLAME_SHOT_DOWN,
-            ACT_DUKE_FLAME_SHOT_RIGHT);
-          break;
-
-      }
-      break;
-
-    case ACT_HOVERBOT_GENERATOR:
-      LoadSprite(ACT_HOVERBOT);
-      // fallthrough
-
-    case ACT_HOVERBOT:
-      LoadSprite(ACT_HOVERBOT_TELEPORT_FX);
-      LoadSpriteRange(ACT_HOVERBOT_DEBRIS_1, ACT_HOVERBOT_DEBRIS_2);
-      break;
-
-    case ACT_ROCKET_LAUNCHER:
-      LoadSpriteRange(ACT_DUKE_ROCKET_UP, ACT_SMOKE_PUFF_FX);
-      break;
-
-    case ACT_FLAME_THROWER:
-      LoadSprite(ACT_DUKE_FLAME_SHOT_UP);
-      LoadSpriteRange(
-        ACT_DUKE_FLAME_SHOT_DOWN,
-        ACT_DUKE_FLAME_SHOT_RIGHT);
-      break;
-
-    case ACT_LASER:
-      LoadSpriteRange(
-        ACT_DUKE_LASER_SHOT_HORIZONTAL,
-        ACT_DUKE_LASER_SHOT_VERTICAL);
-      break;
-
-    case ACT_FLAME_THROWER_BOT_R:
-      LoadSprite(ACT_FLAME_THROWER_FIRE_R);
-      break;
-
-    case ACT_FLAME_THROWER_BOT_L:
-      LoadSprite(ACT_FLAME_THROWER_FIRE_L);
-      break;
-
-    case ACT_RED_BOX_BOMB:
-      LoadSprite(ACT_FIRE_BOMB_FIRE);
-      break;
-
-    case ACT_ROCKET_LAUNCHER_TURRET:
-      LoadSpriteRange(ACT_ENEMY_ROCKET_LEFT, ACT_ENEMY_ROCKET_RIGHT);
-      break;
-
-    case ACT_WATCHBOT_CONTAINER_CARRIER:
-      LoadSprite(ACT_WATCHBOT);
-      LoadSpriteRange(ACT_WATCHBOT_CONTAINER, ACT_WATCHBOT_CONTAINER_DEBRIS_2);
-      break;
-
-    case ACT_BOMBER_PLANE:
-      LoadSprite(ACT_MINI_NUKE);
-      LoadSprite(ACT_NUCLEAR_EXPLOSION);
-      break;
-
-    case ACT_ELECTRIC_REACTOR:
-      LoadSprite(ACT_WHITE_CIRCLE_FLASH_FX);
-      LoadSpriteRange(ACT_REACTOR_FIRE_L, ACT_REACTOR_FIRE_R);
-      break;
-
-    case ACT_MISSILE_INTACT:
-      LoadSprite(ACT_MISSILE_DEBRIS);
-      LoadSprite(ACT_WHITE_CIRCLE_FLASH_FX);
-      LoadSprite(ACT_MISSILE_EXHAUST_FLAME);
-      break;
-
-    case ACT_MISSILE_BROKEN:
-      LoadSprite(ACT_NUCLEAR_EXPLOSION);
-      LoadSprite(ACT_MISSILE_DEBRIS);
-      break;
-
-    case ACT_SLIME_BLOB:
-    case ACT_SLIME_CONTAINER:
-      LoadSprite(ACT_SLIME_BLOB);
-      LoadSprite(ACT_SLIME_BLOB_2);
-      LoadSprite(ACT_BIOLOGICAL_ENEMY_DEBRIS);
-      break;
-
-    case ACT_CEILING_SUCKER:
-    case ACT_UGLY_GREEN_BIRD:
-      LoadSprite(ACT_BIOLOGICAL_ENEMY_DEBRIS);
-      break;
-
-    case ACT_RAPID_FIRE:
-      LoadSprite(ACT_RAPID_FIRE_ICON);
-      break;
-
-    case ACT_BLUE_GUARD_R:
-    case ACT_BLUE_GUARD_L:
-    case ACT_BLUE_GUARD_USING_TERMINAL:
-      LoadSprite(ACT_BLUE_GUARD_R);
-      // fallthrough
-
-    case ACT_LASER_TURRET:
-    case ACT_HOVERING_LASER_TURRET:
-      // The shot sprite is identical for left and right, so there's only one
-      // sprite
-      LoadSprite(ACT_ENEMY_LASER_SHOT_L);
-      LoadSpriteRange(
-        ACT_ENEMY_LASER_MUZZLE_FLASH_L, ACT_ENEMY_LASER_MUZZLE_FLASH_R);
-      break;
-
-    case ACT_SUPER_FORCE_FIELD_R:
-      LoadSprite(ACT_SUPER_FORCE_FIELD_L);
-      break;
-
-    case ACT_WATER_DROP_SPAWNER:
-      LoadSprite(ACT_WATER_DROP);
-      break;
-
-    case ACT_SPIDER:
-      LoadSprite(ACT_SPIDER_SHAKEN_OFF);
-      break;
-
-    case ACT_SPECIAL_HINT_GLOBE:
-      LoadSprite(ACT_SPECIAL_HINT_GLOBE_ICON);
-      break;
-
-    case ACT_TELEPORTER_1:
-      LoadSprite(ACT_TELEPORTER_2);
-      break;
-
-    case ACT_WINDBLOWN_SPIDER_GENERATOR:
-      LoadSpriteRange(ACT_SPIDER_DEBRIS_2, ACT_SPIDER_BLOWING_IN_WIND);
-      break;
-
-    case ACT_UNICYCLE_BOT:
-      LoadSprite(ACT_SMOKE_PUFF_FX);
-      break;
-
-    case ACT_AGGRESSIVE_PRISONER:
-      LoadSprite(ACT_PRISONER_HAND_DEBRIS);
-      break;
-
-    case ACT_BOSS_EPISODE_1:
-      LoadSprite(ACT_MINI_NUKE_SMALL);
-      LoadSprite(ACT_NUCLEAR_EXPLOSION);
-      break;
-
-    case ACT_BOSS_EPISODE_3:
-      LoadSprite(ACT_ENEMY_ROCKET_LEFT);
-      LoadSprite(ACT_ENEMY_ROCKET_RIGHT);
-      LoadSprite(ACT_ENEMY_ROCKET_2_UP);
-      LoadSprite(ACT_ENEMY_ROCKET_2_DOWN);
-      break;
-
-    case ACT_BOSS_EPISODE_4:
-      LoadSprite(ACT_BOSS_EPISODE_4_SHOT);
-      break;
-
-    case ACT_BLOWING_FAN:
-      LoadSprite(ACT_BLOWING_FAN_THREADS_ON_TOP);
-      break;
-  }
-}
-
-
-/** Show a dot on the radar if the given position is in range */
-void pascal HUD_ShowOnRadar(word x, word y)
-{
-  register int x1 = plPosX - 17;
-  register int y1 = plPosY - 17;
-
-  if (
-    (int)x > x1 && x < plPosX + 16 &&
-    (int)y > y1 && y < plPosY + 16)
-  {
-    x1 = x - plPosX;
-    y1 = y - plPosY;
-
-    // [BUG] If you're familiar with the game, you may wonder why the color is
-    // specified as brown here, but actually appears as white on screen.  The
-    // problem is that SetPixel requires the EGA map mask to be configured for
-    // writing to all planes simultaneously in order to work correctly.  If
-    // that's not the case, some bits of whatever color value is already in the
-    // framebuffer will remain, and be combined with the target color.
-    //
-    // When this function is invoked, it is usually preceded by a call to
-    // DrawActor. The latter invokes BlitMaskedTile, which writes to all 4 EGA
-    // planes, one plane at a time. The EGA map mask will be set to 1000b after
-    // DrawActor returns, meaning only writes to the 4th plane are enabled.  The
-    // color brown is 1110b. The background image for the radar view is a
-    // uniform dark grey, which is color index 0001b. SetPixel first erases the
-    // background by writing a 0 to the target coordinates, but because of the
-    // map mask, this only erases the most significant bit - which is already 0
-    // in the background color. Crucially, the 1 bit in the least significant
-    // position in the background color remains.  Next, SetPixel sets all bits
-    // to 1 which are set in the color to be written. This is equivalent to
-    // OR-ing the framebuffer value with the desired color value. Since the
-    // framebuffer still holds the background color, this gives us:
-    //
-    //   0001b OR 1110b -> 1111b
-    //
-    // And that happens to be white.
-    //
-    // It's worth noting that actors can appear on the radar view without
-    // appearing on screen, since the thresholds used in this function span an
-    // area of 32 units on both axes, but the game's viewport is only 20 tiles
-    // high. I.e. actors that are up to 12 tiles below the viewport can
-    // still appear on the radar.  For those actors, the color on screen will
-    // actually be different!  In case an actor is below the viewport, the last
-    // function that was called before drawing the radar dot (and which modifies
-    // the EGA state) will usually be SetPixel, from showing the previous actor
-    // on the radar. SetPixel itself sets the correct EGA map mask needed for
-    // its operation before returning, so the next SetPixel call after that
-    // will output the color as specified.  Meaning, actors below the viewport
-    // which appear on the radar actually show a brown dot (usually).
-    //
-    // Now, if this all sounds overly complicated, it's because none of this is
-    // intentional - it's just whatever coincidences lead to the EGA state being
-    // a certain way when drawing the radar dots. I honestly doubt that the
-    // original developers analyzed the situation very deeply. We don't know if
-    // radar dots were meant to appear in white or in brown, but white seems
-    // more likely since it provides better contrast against the background. So
-    // the most likely explanation is that the developers wanted the dots to
-    // appear in white, but perhaps used the wrong color index here by accident.
-    // We don't know if the original code actually featured named constants for
-    // color indices, after all, perhaps they just wrote the raw numbers and
-    // that would make it easy to mix up 14 (brown) and 15 (white).  By pure
-    // chance, the color ended up coming out as white anyway, and so they called
-    // it a day and moved on to the next thing.
-    //
-    // To make the behavior deterministic, we would need to set the map mask to
-    // 0xF here. No dedicated macro exists for this, but it could be done by
-    // doing an outport(0x3c4, 0xf02).
-    SetPixel(RADAR_POS_X + x1, RADAR_POS_Y + y1, CLR_BROWN);
-  }
-}
-
-
-/** Erase the radar display to a blank slate */
-void HUD_ClearRadar(void)
-{
-  DrawStatusIcon_2x2(XY_TO_OFFSET(33, 4), 34, 15);
-  DrawStatusIcon_2x2(XY_TO_OFFSET(33, 4), 36, 15);
-  DrawStatusIcon_2x2(XY_TO_OFFSET(33, 4), 34, 17);
-  DrawStatusIcon_2x2(XY_TO_OFFSET(33, 4), 36, 17);
-}
-
-
-/** Draw water areas */
-void UpdateAndDrawWaterAreas(void)
-{
-  register word i;
-  register word numActors = gmNumActors;
-
-  if (!gmWaterAreasPresent) { return; }
-
-  for (i = 0; i < numActors; i++)
-  {
-    ActorState* actor = gmActorStates + i;
-
-    if (actor->id == ACT_WATER_BODY)
-    {
-      actor->updateFunc(i);
-    }
+    SpawnActorInSlot(ctx, ctx->gmNumActors, id, x, y);
+    ctx->gmNumActors++;
   }
 }
 
@@ -2549,34 +2312,36 @@ void UpdateAndDrawWaterAreas(void)
  * Also handles updating the top-row HUD message, and draws the radar in the
  * HUD.
  */
-void UpdateAndDrawActors(void)
+void UpdateAndDrawActors(Context* ctx)
 {
-  static int radarBlinkState = 0;
-
   register word handle;
-  register word numActors = gmNumActors;
+  register word numActors = ctx->gmNumActors;
   ActorState* actor;
   word savedDrawStyle;
 
-  HUD_ClearRadar();
-
   for (handle = 0; handle < numActors; handle++)
   {
-    actor = gmActorStates + handle;
+    actor = ctx->gmActorStates + handle;
 
     // Save the current draw style so we can restore it later
     savedDrawStyle = actor->drawStyle;
 
     // Skip deleted actors
-    if (actor->deleted) { continue; }
+    if (actor->deleted)
+    {
+      continue;
+    }
 
     // Skip water areas, these are handled in UpdateAndDrawWaterAreas()
-    if (actor->id == ACT_WATER_BODY) { continue; }
+    if (actor->id == ACT_WATER_BODY)
+    {
+      continue;
+    }
 
     //
     // Active state handling
     //
-    if (IsActorOnScreen(handle))
+    if (IsActorOnScreen(ctx, handle))
     {
       // Actors which have the 'remain active' flag set are given the
       // 'always update' flag when they appear on screen
@@ -2606,7 +2371,7 @@ void UpdateAndDrawActors(void)
 
       // If the actor is currently stuck in the ground, move it up by one unit
       if (CheckWorldCollision(
-        MD_DOWN, actor->id, actor->frame, actor->x, actor->y))
+            ctx, MD_DOWN, actor->id, actor->frame, actor->x, actor->y))
       {
         actor->y--;
         actor->gravityState = 0;
@@ -2614,7 +2379,7 @@ void UpdateAndDrawActors(void)
 
       // Is the actor currently in the air?
       if (!CheckWorldCollision(
-        MD_DOWN, actor->id, actor->frame, actor->x, actor->y + 1))
+            ctx, MD_DOWN, actor->id, actor->frame, actor->x, actor->y + 1))
       {
         // Apply acceleration
         if (actor->gravityState < 4)
@@ -2631,7 +2396,7 @@ void UpdateAndDrawActors(void)
         if (actor->gravityState == 4)
         {
           if (!CheckWorldCollision(
-            MD_DOWN, actor->id, actor->frame, actor->x, actor->y + 1))
+                ctx, MD_DOWN, actor->id, actor->frame, actor->x, actor->y + 1))
           {
             actor->y++;
           }
@@ -2647,13 +2412,17 @@ void UpdateAndDrawActors(void)
         actor->gravityState = 0;
 
         // Conveyor belt movement
-        if (retConveyorBeltCheckResult == 1 && !CheckWorldCollision(
-          MD_LEFT, actor->id, actor->frame, actor->x - 1, actor->y))
+        if (
+          ctx->retConveyorBeltCheckResult == 1 &&
+          !CheckWorldCollision(
+            ctx, MD_LEFT, actor->id, actor->frame, actor->x - 1, actor->y))
         {
           actor->x--;
         }
-        else if (retConveyorBeltCheckResult == 2 && !CheckWorldCollision(
-          MD_RIGHT, actor->id, actor->frame, actor->x + 1, actor->y))
+        else if (
+          ctx->retConveyorBeltCheckResult == 2 &&
+          !CheckWorldCollision(
+            ctx, MD_RIGHT, actor->id, actor->frame, actor->x + 1, actor->y))
         {
           actor->x++;
         }
@@ -2666,12 +2435,12 @@ void UpdateAndDrawActors(void)
     //
 
     // Invoke actor-specific update logic
-    actor->updateFunc(handle);
+    actor->updateFunc(ctx, handle);
 
     // Delete vertically out-of-bounds actors, unless it's the player
     if (
       actor->id != ACT_DUKE_L && actor->id != ACT_DUKE_R &&
-      actor->y > mapBottom)
+      actor->y > ctx->mapBottom)
     {
       actor->deleted = true;
       continue;
@@ -2685,20 +2454,20 @@ void UpdateAndDrawActors(void)
       // of 0 are invincible.
       if (actor->health > 0)
       {
-        HandleActorShotCollision(TestShotCollision(handle), handle);
+        HandleActorShotCollision(ctx, TestShotCollision(ctx, handle), handle);
       }
 
       if (!actor->deleted) // If the actor wasn't killed by a shot
       {
-        UpdateActorPlayerCollision(handle);
+        UpdateActorPlayerCollision(ctx, handle);
 
-        if (IsActorOnScreen(handle))
+        if (IsActorOnScreen(ctx, handle))
         {
           DrawActor(
-            actor->id, actor->frame, actor->x, actor->y, actor->drawStyle);
+            ctx, actor->id, actor->frame, actor->x, actor->y, actor->drawStyle);
         }
 
-        HUD_ShowOnRadar(actor->x, actor->y);
+        HUD_ShowOnRadar(ctx, actor->x, actor->y);
       }
     }
 
@@ -2706,128 +2475,6 @@ void UpdateAndDrawActors(void)
     // function
     actor->drawStyle = savedDrawStyle;
   }
-
-
-  //
-  // HUD message (top row) update and drawing
-  //
-  if (hudMessageCharsPrinted)
-  {
-    // When a delay is set, count down the delay instead of printing more
-    // chars
-    if (hudMessageDelay)
-    {
-      hudMessageDelay--;
-
-      // Once we're done waiting, erase the currently visible characters
-      // and continue printing on the next frame (if there's more).
-      if (hudMessageDelay == 0)
-      {
-        hudMessageCharsPrinted = 1;
-
-        SetDrawPage(gfxCurrentDisplayPage);
-        FillScreenRegion(SFC_BLACK, 0, 0, SCREEN_WIDTH_TILES - 1, 0);
-
-        SetDrawPage(!gfxCurrentDisplayPage);
-        FillScreenRegion(SFC_BLACK, 0, 0, SCREEN_WIDTH_TILES - 1, 0);
-
-        // If we've reached the end of the message, then we stop
-        if (!(*hudCurrentMessage))
-        {
-          hudMessageCharsPrinted = 0;
-          hudShowingHintMachineMsg = false;
-        }
-      }
-    }
-    else // no delay, print the next character
-    {
-      if (*hudCurrentMessage)
-      {
-        int msgCharValue;
-
-        // There's no dedicated font rendering routine for the top-row HUD
-        // message's font, the drawing code is just inline here.
-        if (*hudCurrentMessage != ' ' && *hudCurrentMessage != '*')
-        {
-          if (*hudCurrentMessage >= 'A' && *hudCurrentMessage <= 'T')
-          {
-            msgCharValue = ((*hudCurrentMessage - 'A') << 3) +
-              XY_TO_OFFSET(20, 6);
-          }
-          else if (*hudCurrentMessage >= 'U' && *hudCurrentMessage <= 'Z')
-          {
-            msgCharValue = ((*hudCurrentMessage - 'U') << 3) +
-              XY_TO_OFFSET(17, 24);
-          }
-          else
-          {
-            switch ((int)*hudCurrentMessage)
-            {
-              case ',': msgCharValue = XY_TO_OFFSET(23, 24); break;
-              case '.': msgCharValue = XY_TO_OFFSET(24, 24); break;
-              case '!': msgCharValue = XY_TO_OFFSET(25, 24); break;
-              case '?': msgCharValue = XY_TO_OFFSET(26, 24); break;
-            }
-          }
-
-          // Draw the character onto both video pages
-          SetDrawPage(gfxCurrentDisplayPage);
-          DrawStatusIcon_1x1(msgCharValue, hudMessageCharsPrinted, 0);
-          SetDrawPage(!gfxCurrentDisplayPage);
-          DrawStatusIcon_1x1(msgCharValue, hudMessageCharsPrinted, 0);
-
-          PlaySound(SND_MESSAGE_TYPING);
-        }
-
-        hudMessageCharsPrinted++;
-        hudCurrentMessage++;
-      }
-
-      // When the available width is filled or we've reached a line break,
-      // set a delay. The message that was printed so far remains on screen.
-      if (hudMessageCharsPrinted == 38 || !(*hudCurrentMessage) ||
-        *hudCurrentMessage == '*')
-      {
-        hudMessageDelay = 21;
-      }
-    }
-  }
-
-  //
-  // Draw blinking dot in the middle of the radar display
-  //
-
-  // [BUG] If we printed some message chars above, the blinking dot will not
-  // appear. This is because the message text rendering via DrawStatusIcon_1x1
-  // sets the EGA's write mode to latched writes, and that prevents SetPixel
-  // from working. To fix that, we simply need to add a EGA_SET_DEFAULT_MODE
-  // here.  A white dot will still appear in place of the blinking dot, but
-  // that's the regular radar dot representing the player. It's always drawn,
-  // but normally covered up by the blinking dot.
-  //
-  // It's also worth noting that SetPixel works correctly here purely by chance.
-  // SetPixel requires the EGA map mask to be set to 1111b, to allow writes to
-  // all EGA planes simultaneously. It doesn't set up this state by itself
-  // before drawing the pixel, but interestingly, it does _afterwards_. Meaning,
-  // the map mask will always be correct after a call to SetPixel.
-  // If no message characters are drawn, then the last function to be called
-  // before we draw the radar dot usually happens to be HUD_ShowOnRadar, which
-  // does call SetPixel. But there are situations where something else might be
-  // called before we get here, for example when we have actors that use
-  // DS_INVISIBLE and draw their sprites manually, like the grabber claw. Those
-  // actors generate a DrawSprite call, but no SetPixel call since
-  // HUD_ShowOnRadar is skipped if the draw style is DS_INVISIBLE. This then
-  // prevents the blinking dot from appearing correctly.
-  // To make this work reliably, the map mask should explicitly be set here.
-
-  // Update the color cycle state. This alternates through light grey, dark red,
-  // red, and orange when combined with CLR_LIGHT_GREY in the SetPixel call
-  // below.
-  radarBlinkState++;
-  if (radarBlinkState > 3)
-  {
-    radarBlinkState = 0;
-  }
-
-  SetPixel(RADAR_POS_X, RADAR_POS_Y, CLR_LIGHT_GREY + radarBlinkState);
 }
+
+RIGEL_RESTORE_WARNINGS

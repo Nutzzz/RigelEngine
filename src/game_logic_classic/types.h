@@ -23,22 +23,13 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef TYPES_H
-#define TYPES_H
+#pragma once
 
-enum
-{
-  false = 0,
-  true = 1
-};
+#include <stdbool.h>
+#include <stdint.h>
 
-typedef unsigned char byte;
-typedef unsigned int word;
-typedef unsigned long dword;
-typedef int ibool;
-typedef byte bool;
-typedef signed char sbyte;
-
-typedef void interrupt (*InterruptHandler)(void);
-
-#endif
+typedef uint8_t byte;
+typedef uint16_t word;
+typedef uint32_t dword;
+typedef int16_t ibool;
+typedef int8_t sbyte;

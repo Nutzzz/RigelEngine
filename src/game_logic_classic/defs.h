@@ -23,46 +23,45 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef DEFS_H
-#define DEFS_H
+#pragma once
 
 #include "types.h"
 
 // Pixels
-#define SCREEN_WIDTH            320
-#define SCREEN_HEIGHT           200
+#define SCREEN_WIDTH 320
+#define SCREEN_HEIGHT 200
 
 // Tiles
-#define SCREEN_WIDTH_TILES       40
-#define SCREEN_HEIGHT_TILES      25
-#define VIEWPORT_WIDTH           32
-#define VIEWPORT_HEIGHT          20
+#define SCREEN_WIDTH_TILES 40
+#define SCREEN_HEIGHT_TILES 25
+#define VIEWPORT_WIDTH 32
+#define VIEWPORT_HEIGHT 20
 
-#define TIMER_FREQUENCY         280
+#define TIMER_FREQUENCY 280
 
-#define CLOAK_TIME              700
-#define RAPID_FIRE_TIME         700
-#define MAX_AMMO                 32
-#define MAX_AMMO_FLAMETHROWER    64
-#define PLAYER_MAX_HEALTH         9
-#define INITIAL_MERCY_FRAMES     20
-#define NUM_INVENTORY_SLOTS       6
+#define CLOAK_TIME 700
+#define RAPID_FIRE_TIME 700
+#define MAX_AMMO 32
+#define MAX_AMMO_FLAMETHROWER 64
+#define PLAYER_MAX_HEALTH 9
+#define INITIAL_MERCY_FRAMES 20
+#define NUM_INVENTORY_SLOTS 6
 
-#define MM_TOTAL_SIZE        390000
-#define MM_MAX_NUM_CHUNKS      1150
+#define MM_TOTAL_SIZE 390000
+#define MM_MAX_NUM_CHUNKS 1150
 
-#define NUM_HIGH_SCORE_ENTRIES   10
-#define HIGH_SCORE_NAME_MAX_LEN  15
+#define NUM_HIGH_SCORE_ENTRIES 10
+#define HIGH_SCORE_NAME_MAX_LEN 15
 
-#define NUM_SAVE_SLOTS            8
-#define SAVE_SLOT_NAME_MAX_LEN   18
+#define NUM_SAVE_SLOTS 8
+#define SAVE_SLOT_NAME_MAX_LEN 18
 
-#define NUM_PARTICLE_GROUPS       5
-#define PARTICLES_PER_GROUP      64
+#define NUM_PARTICLE_GROUPS 5
+#define PARTICLES_PER_GROUP 64
 
-#define MAX_NUM_ACTORS          448
-#define MAX_NUM_EFFECTS          18
-#define MAX_NUM_PLAYER_SHOTS      6
+#define MAX_NUM_ACTORS 448
+#define MAX_NUM_EFFECTS 18
+#define MAX_NUM_PLAYER_SHOTS 6
 #define MAX_NUM_MOVING_MAP_PARTS 70
 
 
@@ -86,10 +85,47 @@ typedef enum
   CLR_WHITE = 15
 } PaletteColor;
 
+typedef enum
+{
+  SFC_BLACK,
+  SFC_WHITE,
+  SFC_YELLOW,
+  SFC_BLACK2,
+  SFC_DEBUG1,
+  SFC_DEBUG2,
+  SFC_DEBUG3
+} ScreenFillColor;
 
-#ifndef SHAREWARE
-#define REGISTERED_VERSION
-#endif
+
+typedef enum
+{
+  CT_COMMON,
+  CT_SPRITE,
+  CT_MAP_DATA,
+  CT_INGAME_MUSIC,
+  CT_TEMPORARY,
+  CT_CZONE,
+  CT_MASKED_TILES = 9,
+  CT_MENU_MUSIC = 12,
+  CT_INTRO_SOUND_FX = 13,
+} ChunkType;
 
 
-#endif
+#define XY_TO_OFFSET(x, y) (x * 8 + y * 320)
+
+// Convert a tile value to pixels (Context* ctx, ultiply by 8)
+#define T2PX(val) ((val) << 3)
+
+typedef struct
+{
+  word timeAlive;
+  word x;
+  word y;
+  word color;
+} ParticleGroup;
+
+
+// Compatibility
+
+#define far
+#define pascal

@@ -23,12 +23,43 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "base/warnings.hpp"
+
+#include "actors.h"
+#include "common.h"
+#include "gamedefs.h"
+#include "sounds.h"
+#include "vars.h"
+
+
+RIGEL_DISABLE_WARNINGS
 
 /*******************************************************************************
 
 Game logic, part 1: Dynamic level geometry (moving map parts)
 
 *******************************************************************************/
+
+static void pascal Map_MoveSection(
+  Context* ctx,
+  word left,
+  word top,
+  word right,
+  word bottom,
+  word distance)
+{
+  int16_t x;
+  int16_t y;
+
+  for (y = bottom; y >= top; y--)
+  {
+    for (x = left; x <= right; x++)
+    {
+      Map_SetTile(ctx, Map_GetTile(ctx, x, y), x, y + distance);
+      Map_SetTile(ctx, 0, x, y);
+    }
+  }
+}
 
 
 /** Update moving map parts and shootable walls
@@ -41,7 +72,7 @@ Game logic, part 1: Dynamic level geometry (moving map parts)
  * The moving parts of the map are just tiles like any others, and thus they're
  * drawn by the regular map drawing code in UpdateAndDrawGame() in game3.c.
  */
-void UpdateMovingMapParts(void)
+void UpdateMovingMapParts(Context* ctx)
 {
   register word left;
   register word i;
@@ -74,19 +105,26 @@ void UpdateMovingMapParts(void)
   for an earthquake, waiting a set delay, or waiting for a door to be unlocked.
   */
 
-  for (i = 0; i < gmNumMovingMapParts; i++)
+  for (i = 0; i < ctx->gmNumMovingMapParts; i++)
   {
     roundTwo = false;
 
-    state = gmMovingMapParts + i;
+    state = ctx->gmMovingMapParts + i;
 
     // Skip deactivated/invalid types
-    if (state->type != 0 && state->type < 99) { continue; }
+    if (state->type != 0 && state->type < 99)
+    {
+      continue;
+    }
 
     if (state->type == 99) // shootable wall
     {
       if (FindPlayerShotInRect(
-        state->left - 1, state->top - 2, state->right + 2, state->bottom + 1))
+            ctx,
+            state->left - 1,
+            state->top - 2,
+            state->right + 2,
+            state->bottom + 1))
       {
         // Deactivate this state object (type 1 is skipped by the check above)
         state->type = 1;
@@ -94,15 +132,15 @@ void UpdateMovingMapParts(void)
         FLASH_SCREEN(SFC_WHITE);
 
         Map_DestroySection(
-          state->left, state->top, state->right, state->bottom);
+          ctx, state->left, state->top, state->right, state->bottom);
       }
     }
     else if (
       (state->type == 102 || state->type == 103 || state->type == 104) &&
       (HAS_TILE_ATTRIBUTE(
-        Map_GetTile(state->left, state->bottom + 1), TA_SOLID_TOP) ||
-      HAS_TILE_ATTRIBUTE(
-        Map_GetTile(state->right, state->bottom + 1), TA_SOLID_TOP)))
+         Map_GetTile(ctx, state->left, state->bottom + 1), TA_SOLID_TOP) ||
+       HAS_TILE_ATTRIBUTE(
+         Map_GetTile(ctx, state->right, state->bottom + 1), TA_SOLID_TOP)))
     {
       // Types 102, 103, and 104 don't do anything as long as there's solid
       // ground below.
@@ -118,7 +156,7 @@ void UpdateMovingMapParts(void)
         state->type = 105;
       }
 
-doMovement:
+    doMovement:
       left = state->left;
       top = state->top;
       right = state->right;
@@ -128,9 +166,9 @@ doMovement:
       // type of 102, 103, or 104, it means there was no solid ground before.
       if (
         HAS_TILE_ATTRIBUTE(
-          Map_GetTile(state->left, state->bottom + 1), TA_SOLID_TOP) ||
+          Map_GetTile(ctx, state->left, state->bottom + 1), TA_SOLID_TOP) ||
         HAS_TILE_ATTRIBUTE(
-          Map_GetTile(state->right, state->bottom + 1), TA_SOLID_TOP))
+          Map_GetTile(ctx, state->right, state->bottom + 1), TA_SOLID_TOP))
       {
         // Type 106 is turned into 102 once it reaches solid ground. The effect
         // of this is that map parts with type 106 that start out on solid
@@ -147,14 +185,14 @@ doMovement:
         // reaching the ground
         if (state->type == 102 || state->type == 103)
         {
-          PlaySound(SND_ROCK_LANDING);
+          PlaySound(ctx, SND_ROCK_LANDING);
           SHAKE_SCREEN(7);
         }
         // 101 and 105 explode when reaching the ground.
         else if (state->type == 101 || state->type == 105)
         {
           state->type = 1; // deactivate
-          Map_DestroySection(left, top, right, bottom);
+          Map_DestroySection(ctx, left, top, right, bottom);
         }
         else // all other types sink into the ground
         {
@@ -165,17 +203,18 @@ doMovement:
           {
             SHAKE_SCREEN(2);
             SpawnEffect(
+              ctx,
               ACT_FLAME_FX,
-              left + (int)RandomNumber() % (right - left),
+              left + (int16_t)RandomNumber(ctx) % (right - left),
               bottom + 1,
               EM_RISE_UP,
               0);
-            PlaySound(SND_HAMMER_SMASH);
+            PlaySound(ctx, SND_HAMMER_SMASH);
           }
 
           // Sink into the ground. By skipping the bottom row in the move,
           // it gets overwritten by the tiles above it.
-          Map_MoveSection(left, top, right, bottom - 1, 1);
+          Map_MoveSection(ctx, left, top, right, bottom - 1, 1);
           top = state->top++;
 
           if (top == bottom) // Sinking complete?
@@ -183,18 +222,18 @@ doMovement:
             // Erase the last row of tiles
             for (x = left; x <= right; x++)
             {
-              Map_SetTile(0, x, bottom);
+              Map_SetTile(ctx, 0, x, bottom);
             }
 
-            PlaySound(SND_ROCK_LANDING);
-            gmMovingMapParts[i].type = 1; // deactivate
+            PlaySound(ctx, SND_ROCK_LANDING);
+            ctx->gmMovingMapParts[i].type = 1; // deactivate
           }
         }
       }
       else // no solid ground below
       {
         // Fall down
-        Map_MoveSection(left, top, right, bottom, 1);
+        Map_MoveSection(ctx, left, top, right, bottom, 1);
         state->top++;
         state->bottom++;
 
@@ -206,11 +245,11 @@ doMovement:
         if (
           (state->type == 102 || state->type == 103) &&
           (HAS_TILE_ATTRIBUTE(
-            Map_GetTile(state->left, state->bottom + 1), TA_SOLID_TOP) ||
-          HAS_TILE_ATTRIBUTE(
-            Map_GetTile(state->right, state->bottom + 1), TA_SOLID_TOP)))
+             Map_GetTile(ctx, state->left, state->bottom + 1), TA_SOLID_TOP) ||
+           HAS_TILE_ATTRIBUTE(
+             Map_GetTile(ctx, state->right, state->bottom + 1), TA_SOLID_TOP)))
         {
-          PlaySound(SND_ROCK_LANDING);
+          PlaySound(ctx, SND_ROCK_LANDING);
           SHAKE_SCREEN(7);
         }
         else
@@ -227,3 +266,5 @@ doMovement:
     }
   }
 }
+
+RIGEL_RESTORE_WARNINGS

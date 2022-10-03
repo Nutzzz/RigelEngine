@@ -23,6 +23,12 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "common.h"
+#include "gamedefs.h"
+#include "vars.h"
+
+#include <stdlib.h>
+
 
 /*******************************************************************************
 
@@ -67,47 +73,39 @@ done just by specifying the chunk type, not the allocated pointer.
 
 *******************************************************************************/
 
-
 /** Initialize the memory manager
  *
  * This allocates 380 kB of memory from DOS, and sets up the memory manager.
  * Doesn't do any error checking, and always returns false.
  */
-bool MM_Init(void)
+bool MM_Init(Context* ctx)
 {
-  int i;
+  int16_t i;
 
   // Reset the per-chunk bookkeeping data.
   //
   // [NOTE] I don't think this is necessary, none of this data is used as long
-  // as mmChunksUsed is 0, and as chunks are added, only those with valid data
-  // are used. It doesn't hurt to set these to a known state, of course. It
+  // as ctx->mmChunksUsed is 0, and as chunks are added, only those with valid
+  // data are used. It doesn't hurt to set these to a known state, of course. It
   // could've been done more efficiently using memset, though.
   for (i = 0; i < MM_MAX_NUM_CHUNKS; ++i)
   {
-    mmChunkSizes[i] = 0;
-    mmChunkTypes[i] = CT_TEMPORARY;
+    ctx->mmChunkSizes[i] = 0;
+    ctx->mmChunkTypes[i] = CT_TEMPORARY;
   }
 
   // Allocate memory from OS (via Borland standard library) and initialize
   // everything else.
-  mmMemTotal = MM_TOTAL_SIZE;
-  mmRawMem = farmalloc(MM_TOTAL_SIZE);
-  mmChunksUsed = 0;
-  mmMemUsed = 0;
+  ctx->mmMemTotal = MM_TOTAL_SIZE;
+  /*ctx->mmRawMem = malloc(MM_TOTAL_SIZE);*/
+  ctx->mmChunksUsed = 0;
+  ctx->mmMemUsed = 0;
 
   return false;
 }
 
 
-/** Returns amount of remaining free memory */
-dword MM_MemAvailable(void)
-{
-  return mmMemTotal - mmMemUsed;
-}
-
-
-#define CURRENT_MEM_TOP_PTR() (void far*)((byte huge*)mmRawMem + mmMemUsed)
+#define CURRENT_MEM_TOP_PTR() (ctx->mmRawMem + ctx->mmMemUsed)
 
 
 /** Allocate a chunk of given size and type
@@ -117,126 +115,32 @@ dword MM_MemAvailable(void)
  * enough memory being left, or the maximum number of chunks already being
  * allocated).
  */
-void far* MM_PushChunk(word size, ChunkType type)
+void far* MM_PushChunk(Context* ctx, word size, ChunkType type)
 {
   void far* mem;
 
-  if (mmMemUsed + size > mmMemTotal)
+  if (ctx->mmMemUsed + size > ctx->mmMemTotal)
   {
-    Quit("No Memory");
+    return NULL;
   }
 
-  if (mmChunksUsed >= MM_MAX_NUM_CHUNKS)
+  if (ctx->mmChunksUsed >= MM_MAX_NUM_CHUNKS)
   {
-    Quit("No Chunks");
+    return NULL;
   }
   else
   {
     // Make a note of the newly allocated chunk's properties
-    mmChunkSizes[mmChunksUsed] = size;
-    mmChunkTypes[mmChunksUsed] = type;
+    ctx->mmChunkSizes[ctx->mmChunksUsed] = size;
+    ctx->mmChunkTypes[ctx->mmChunksUsed] = type;
 
     // Use current top of memory buffer to satisfy the request
     mem = CURRENT_MEM_TOP_PTR();
 
     // Update how much memory/chunks remain available
-    mmMemUsed += size;
-    mmChunksUsed++;
+    ctx->mmMemUsed += size;
+    ctx->mmChunksUsed++;
   }
 
   return mem;
-}
-
-
-/** Nulls out sprite data pointers matching the given address */
-static void pascal UpdateSpriteDataList(void far* address)
-{
-  word i;
-
-  for (i = 0; i < MM_MAX_NUM_CHUNKS; i++)
-  {
-    if (gfxLoadedSprites[i] == address)
-    {
-      gfxLoadedSprites[i] = NULL;
-
-      // [PERF] The search could be terminated here, since only one sprite
-      // can be loaded at one address at a time. But the loop keeps running
-      // until all sprite data pointers have been checked.
-    }
-  }
-}
-
-
-/** Frees last allocated chunk
- *
- * Frees the most recently allocated chunk _iff_ the given type matches. No-op
- * otherwise.
- *
- * If the chunk type is CT_INGAME_MUSIC, this also calls StopMusic().
- * No special handling for CT_SPRITE chunks, unlike MM_PopChunks.
- *
- * Example:
- *
- *   byte far* data = MM_PushChunk(5, CT_TEMPORARY);
- *
- *   // work with data
- *
- *   MM_PopChunk(CT_TEMPORARY);
- */
-void pascal MM_PopChunk(ChunkType type)
-{
-  if (mmChunksUsed != 0 && mmChunkTypes[mmChunksUsed-1] == type)
-  {
-    mmChunksUsed--;
-    mmMemUsed -= mmChunkSizes[mmChunksUsed];
-
-    if (type == CT_INGAME_MUSIC)
-    {
-      StopMusic();
-    }
-  }
-}
-
-
-/** Frees multiple chunks
- *
- * Frees all most recently allocated chunks _iff_ the given type matches.  Stops
- * as soon as a chunk of different type is encountered.  This means that if
- * several chunks of type A have been allocated followed by a chunk of type B
- * and then more chunks of type A, only the chunks following the B chunk will be
- * freed.
- *
- * If the chunk type is CT_SPRITE, the corresponding entries in the loaded
- * sprite table will be reset to NULL. No special handling for CT_INGAME_MUSIC,
- * unlike MM_PopChunk.
- *
- * Example:
- *
- *   MM_PushChunk(5, CT_TEMPORARY);    // not freed by call below
- *   MM_PushChunk(5, CT_INGAME_MUSIC); // not freed
- *   MM_PushChunk(5, CT_TEMPORARY);    // freed
- *   MM_PushChunk(5, CT_TEMPORARY);    // freed
- *
- *   MM_PopChunks(CT_TEMPORARY);
- */
-void pascal MM_PopChunks(ChunkType type)
-{
-  while (mmChunksUsed != 0 && mmChunkTypes[mmChunksUsed-1] == type)
-  {
-    mmChunksUsed--;
-    mmMemUsed -= mmChunkSizes[mmChunksUsed];
-
-    if (type == CT_SPRITE)
-    {
-      // [PERF] UpdateSpriteDataList internally does a linear search for the
-      // address, making this an O(N^2) algorithm.  This isn't so easy to fix
-      // though, because the memory manager doesn't know which sprite data index
-      // is used for which address. And any extra bookkeeping data would require
-      // more memory, which is in short supply. The game doesn't unload any
-      // sprites during gameplay, so there's no performance impact on the game
-      // itself and this is probably not a bad design overall, since it's so
-      // simple.
-      UpdateSpriteDataList(CURRENT_MEM_TOP_PTR());
-    }
-  }
 }
